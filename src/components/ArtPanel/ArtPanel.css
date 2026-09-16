@@ -1,0 +1,65 @@
+.art-panel {
+  position: relative;
+  overflow: hidden;
+  background: var(--ink-soft);
+  border-radius: var(--radius);
+}
+
+.art-panel__img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: opacity 0.6s var(--ease-premium);
+}
+
+.art-panel__placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.art-panel__placeholder::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.35'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+  opacity: 0.5;
+}
+
+.art-panel__mark {
+  position: relative;
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 6vw, 3.5rem);
+  letter-spacing: 0.05em;
+  color: rgba(244, 239, 228, 0.16);
+}
+
+.art-panel--chair .art-panel__placeholder {
+  background: radial-gradient(120% 90% at 50% 20%, #2a2420 0%, #14110f 45%, #050505 100%);
+}
+
+.art-panel--detail .art-panel__placeholder {
+  background: linear-gradient(160deg, #1c1712 0%, #0c0a08 60%, #000 100%);
+}
+
+.art-panel--tools .art-panel__placeholder {
+  background: linear-gradient(200deg, #201a12 0%, #100d09 55%, #030303 100%);
+}
+
+.art-panel--action .art-panel__placeholder {
+  background: radial-gradient(100% 100% at 80% 30%, #241d14 0%, #0c0a08 55%, #020202 100%);
+}
+
+.art-panel--interior .art-panel__placeholder {
+  background: linear-gradient(135deg, #201a13 0%, #0e0c0a 50%, #030303 100%);
+}
+
+.art-panel--gallery .art-panel__placeholder {
+  background: linear-gradient(150deg, #221b13 0%, #0d0b09 60%, #010101 100%);
+}

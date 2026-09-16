@@ -1,0 +1,15 @@
+.split-words {
+  display: block;
+}
+
+.split-words__clip {
+  display: inline-block;
+  overflow: hidden;
+  vertical-align: top;
+  padding-bottom: 0.08em;
+}
+
+.split-words__word {
+  display: inline-block;
+  will-change: transform;
+}

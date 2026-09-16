@@ -1,0 +1,33 @@
+:root {
+  /* palette — charcoal / bone / brass, kept deliberately narrow */
+  --ink: #0a0a0a;
+  --ink-soft: #141210;
+  --bone: #f4efe4;
+  --bone-dim: #cfc7b6;
+  --ash: #8a857c;
+  --brass: #c8a464;
+  --brass-bright: #e6c583;
+  --line: rgba(244, 239, 228, 0.14);
+  --line-strong: rgba(244, 239, 228, 0.28);
+
+  /* type */
+  --font-display: "Anton", "Arial Narrow", sans-serif;
+  --font-serif: "Fraunces", Georgia, serif;
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+
+  --fs-hero: clamp(4.2rem, 17vw, 15rem);
+  --fs-statement: clamp(2.6rem, 9vw, 7rem);
+  --fs-h2: clamp(2rem, 5vw, 3.6rem);
+  --fs-h3: clamp(1.3rem, 2.4vw, 1.9rem);
+  --fs-lead: clamp(1.05rem, 1.6vw, 1.4rem);
+  --fs-body: clamp(0.95rem, 1vw, 1.05rem);
+  --fs-micro: 0.78rem;
+
+  /* rhythm */
+  --gutter: clamp(1.25rem, 4vw, 3.5rem);
+  --section-pad: clamp(5rem, 12vw, 9rem);
+  --radius: 2px;
+
+  --ease-premium: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-slow: 1.1s;
+}

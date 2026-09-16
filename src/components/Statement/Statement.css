@@ -1,0 +1,24 @@
+.statement {
+  position: relative;
+  height: 100svh;
+  min-height: 26rem;
+  background: var(--ink);
+}
+
+.statement__stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.statement__word {
+  position: absolute;
+  font-family: var(--font-display);
+  font-size: var(--fs-statement);
+  letter-spacing: -0.01em;
+  color: var(--bone);
+  text-align: center;
+  will-change: transform, opacity;
+}
