@@ -4,7 +4,7 @@ import "./Nav.css";
 
 const LINKS = [
   { href: "#craft", label: "Le métier" },
-  { href: "#gallery", label: "Coupes" },
+  { href: "#atmosphere", label: "Le quotidien" },
   { href: "#salon", label: "Le salon" },
   { href: "#booking", label: "Rendez-vous" },
 ];

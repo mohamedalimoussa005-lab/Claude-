@@ -2,16 +2,15 @@ import { useEffect, useRef } from "react";
 import { ArtPanel } from "../ArtPanel/ArtPanel";
 import { SplitWords } from "../SplitWords/SplitWords";
 import { gsap, DESKTOP_QUERY } from "../../lib/gsap";
-import "./Craft.css";
+import "./Atmosphere.css";
 
-export function Craft() {
+export function Atmosphere() {
   const sectionRef = useRef<HTMLDivElement>(null);
   const mediaRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const section = sectionRef.current;
     if (!section) return;
-
     const ctx = gsap.context(() => {
       gsap.from(mediaRef.current, {
         clipPath: "inset(0% 0% 100% 0%)",
@@ -25,43 +24,36 @@ export function Craft() {
         duration: 0.9,
         ease: "power3.out",
         stagger: 0.05,
-        scrollTrigger: { trigger: section, start: "top 68%" },
+        scrollTrigger: { trigger: section, start: "top 65%" },
       });
 
       gsap.matchMedia().add(DESKTOP_QUERY, () => {
         gsap.to(mediaRef.current, {
-          yPercent: -8,
+          yPercent: -6,
           ease: "none",
           scrollTrigger: { trigger: section, start: "top bottom", end: "bottom top", scrub: true },
         });
       });
     }, section);
-
     return () => ctx.revert();
   }, []);
 
   return (
-    <section id="craft" className="craft" ref={sectionRef}>
-      <div className="craft__media" ref={mediaRef}>
+    <section id="atmosphere" className="atmosphere" ref={sectionRef}>
+      <div className="atmosphere__media" ref={mediaRef}>
         <ArtPanel
-          src="craft-detail.jpg"
-          tone="detail"
-          alt="Dégradé précis à la tondeuse, réalisé chez LS Barber"
-          className="craft__panel"
+          src="barber-action.jpg"
+          tone="action"
+          alt="Coupe en cours, ambiance du salon"
+          className="atmosphere__panel"
         />
       </div>
-      <div className="craft__scrim" aria-hidden="true" />
+      <div className="atmosphere__scrim" aria-hidden="true" />
 
-      <div className="craft__content">
-        <div className="craft__type">
-          <SplitWords as="h2" text="PRÉCISION" className="craft__heading" />
-          <SplitWords as="h2" text="DANS CHAQUE" className="craft__heading" />
-          <SplitWords as="h2" text="DÉTAIL." className="craft__heading craft__heading--accent" />
-        </div>
-        <p className="craft__lead">
-          À LS Barber, le geste prime sur la vitesse. Ligne de nuque nette, dégradé maîtrisé, finitions
-          au rasoir — la précision se voit autant qu'elle se ressent.
-        </p>
+      <div className="atmosphere__content">
+        <p className="eyebrow">Le geste, au quotidien</p>
+        <SplitWords as="h2" text="MÊME EXIGENCE." className="atmosphere__heading" />
+        <SplitWords as="h2" text="CHAQUE JOUR." className="atmosphere__heading" />
       </div>
     </section>
   );

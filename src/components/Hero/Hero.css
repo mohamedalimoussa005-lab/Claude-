@@ -1,38 +1,76 @@
 .hero {
   position: relative;
-  height: 100svh;
-  min-height: 34rem;
+  background: var(--ink);
   overflow: hidden;
-  background: radial-gradient(120% 90% at 50% 0%, #171310 0%, var(--ink) 55%, #000 100%);
-}
-
-.hero__stage {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.hero__type {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0;
+  padding-top: 5.5rem;
+}
+
+/* ---- photo layer (mobile: contained band; desktop: full-bleed) ---- */
+
+.hero__media {
+  order: 2;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 5;
+  overflow: hidden;
+  will-change: transform, filter;
+}
+
+.hero__media-panel {
+  width: 100%;
+  height: 100%;
+}
+
+.hero__media::before,
+.hero__media::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.hero__media::before {
+  top: 0;
+  height: 22%;
+  background: linear-gradient(180deg, rgba(10, 10, 10, 0.55) 0%, transparent 100%);
+}
+
+.hero__media::after {
+  bottom: 0;
+  height: 30%;
+  background: linear-gradient(0deg, var(--ink) 0%, transparent 100%);
+}
+
+.hero__glow {
+  display: none;
+}
+
+.hero__scrim {
+  display: none;
+}
+
+/* ---- typography ---- */
+
+.hero__type {
+  order: 1;
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  padding: 1.75rem var(--gutter) 1rem;
   will-change: transform, opacity;
 }
 
 .hero__type-line {
   font-family: var(--font-display);
-  font-size: var(--fs-hero);
-  line-height: 0.82;
+  font-size: clamp(3rem, 16vw, 5.5rem);
+  line-height: 0.86;
   letter-spacing: -0.01em;
   color: var(--bone);
-  white-space: nowrap;
 }
 
 .hero__type-line--outline {
@@ -41,50 +79,18 @@
   margin-top: -0.06em;
 }
 
-.hero__atmosphere {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  background:
-    radial-gradient(60% 50% at 50% 30%, rgba(200, 164, 100, 0.16), transparent 70%),
-    linear-gradient(180deg, transparent 0%, transparent 55%, var(--ink) 96%);
-  will-change: opacity;
-}
-
-.hero__chair {
-  position: relative;
-  z-index: 3;
-  width: min(30rem, 62vw);
-  height: min(78vh, 44rem);
-  will-change: transform;
-  filter: drop-shadow(0 2rem 4rem rgba(0, 0, 0, 0.55));
-}
-
-.hero__chair-panel {
-  width: 100%;
-  height: 100%;
-}
-
-.hero__chair-panel::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(180deg, rgba(10, 10, 10, 0) 55%, rgba(10, 10, 10, 0.75) 100%);
-  pointer-events: none;
-}
+/* ---- copy + CTA ---- */
 
 .hero__interface {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: clamp(3.5rem, 8vh, 5.5rem);
-  z-index: 4;
+  order: 3;
+  position: relative;
+  z-index: 2;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.9rem;
-  text-align: center;
-  padding-inline: var(--gutter);
+  text-align: left;
+  padding: 1.25rem var(--gutter) 2.25rem;
 }
 
 .hero__tagline {
@@ -93,63 +99,116 @@
   font-weight: 400;
   font-size: var(--fs-lead);
   color: var(--bone-dim);
-  max-width: 32rem;
+  max-width: 26rem;
 }
 
 .hero__actions {
   display: flex;
   gap: 1rem;
-  margin-top: 0.6rem;
+  margin-top: 0.4rem;
   flex-wrap: wrap;
-  justify-content: center;
+  justify-content: flex-start;
 }
 
 .hero__scroll-cue {
-  position: absolute;
-  right: var(--gutter);
-  bottom: 1.6rem;
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  font-size: var(--fs-micro);
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--ash);
-  writing-mode: vertical-rl;
+  display: none;
 }
 
-.hero__scroll-line {
-  width: 1px;
-  height: 2.4rem;
-  background: linear-gradient(180deg, var(--brass), transparent);
-  animation: scroll-cue 2.4s ease-in-out infinite;
+/* =====================================================================
+   Desktop: the full-bleed cinematic composition. The generated photo
+   already carries its own negative space on the left, so the wordmark
+   and copy sit there rather than on a separate background layer.
+   ===================================================================== */
+
+@media (min-width: 900px) {
+  .hero {
+    height: 100svh;
+    min-height: 34rem;
+    padding-top: 0;
+    display: block;
+  }
+
+  .hero__media {
+    order: 0;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    aspect-ratio: auto;
+    z-index: 1;
+  }
+
+  .hero__glow {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    background: radial-gradient(38% 45% at 74% 32%, rgba(255, 240, 210, 0.32), transparent 70%);
+    mix-blend-mode: screen;
+    pointer-events: none;
+  }
+
+  .hero__scrim {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    background:
+      linear-gradient(90deg, rgba(10, 10, 10, 0.6) 0%, rgba(10, 10, 10, 0.22) 40%, transparent 62%),
+      linear-gradient(180deg, rgba(10, 10, 10, 0.55) 0%, transparent 18%, transparent 76%, rgba(10, 10, 10, 0.7) 100%);
+    pointer-events: none;
+  }
+
+  .hero__type {
+    position: absolute;
+    z-index: 3;
+    left: var(--gutter);
+    top: 50%;
+    transform: translateY(-52%);
+    width: min(50vw, 36rem);
+    padding: 0;
+  }
+
+  .hero__type-line {
+    font-size: clamp(2.8rem, 8.6vw, 7rem);
+    line-height: 0.88;
+  }
+
+  .hero__interface {
+    position: absolute;
+    z-index: 3;
+    left: var(--gutter);
+    bottom: clamp(3rem, 9vh, 5.5rem);
+    width: min(46vw, 32rem);
+    padding: 0;
+  }
+
+  .hero__scroll-cue {
+    display: flex;
+    position: absolute;
+    right: var(--gutter);
+    bottom: 1.6rem;
+    z-index: 3;
+    align-items: center;
+    gap: 0.6rem;
+    font-size: var(--fs-micro);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--ash);
+    writing-mode: vertical-rl;
+  }
+
+  .hero__scroll-line {
+    width: 1px;
+    height: 2.4rem;
+    background: linear-gradient(180deg, var(--brass), transparent);
+    animation: scroll-cue 2.4s ease-in-out infinite;
+  }
 }
 
 @keyframes scroll-cue {
   0%, 100% { transform: scaleY(0.4); opacity: 0.5; }
   50% { transform: scaleY(1); opacity: 1; }
-}
-
-@media (max-width: 720px) {
-  .hero {
-    height: auto;
-    min-height: 122svh;
-  }
-  .hero__stage {
-    align-items: flex-start;
-    padding-top: 7vh;
-  }
-  .hero__chair {
-    width: 58vw;
-    height: 40vh;
-  }
-  .hero__interface {
-    bottom: 2.5rem;
-  }
-  .hero__scroll-cue {
-    display: none;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

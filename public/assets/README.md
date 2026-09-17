@@ -1,19 +1,25 @@
-# Real photography goes here
+# Photography
 
-The site ships with premium gradient/texture placeholders wherever a photo
-belongs, so it looks intentional with zero images. Drop real LS Barber
-photography in using the exact filenames below and each placeholder is
-replaced automatically — no code changes needed.
+## Campaign imagery (in place)
+
+`hero-chair.jpg`, `craft-detail.jpg`, `barber-tools.jpg` and `barber-action.jpg`
+are AI-generated art direction (via Higgsfield), used for mood/campaign
+visuals in the Hero, Craft, Services and Atmosphere sections. They are not
+photos of LS Barber's actual premises, staff or clients — nothing on the
+site claims otherwise. Swap any of them for real LS Barber photography at
+any time by replacing the file at the same path; no code changes needed.
+
+## Still needed: real salon photography
 
 | Filename | Used in | Recommended shape |
 | --- | --- | --- |
-| `hero-chair.jpg` | Hero foreground | Portrait/tall, barber chair, dark/moody lighting, subject off-center |
-| `craft-detail.jpg` | Craft section | Close-up of a cut/clipper/razor in motion |
-| `barber-tools.jpg` | Craft section | Editorial flat-lay or in-hand tools shot |
-| `barber-action.jpg` | Gallery | Barber mid-cut, candid, shallow depth of field |
-| `salon-interior.jpg` | Salon/trust section | Wide interior, shows the space and light |
-| `gallery-1.jpg` … `gallery-4.jpg` | Gallery grid | Finished cuts, consistent lighting/angle across the set |
+| `salon-interior.jpg` | Salon/trust section | Wide interior, shows the real space and light |
 
-Specs: 2400px on the long edge, JPEG q80 or WebP, no on-image text/logos —
-typography is handled by the site. Real photos of real clients/staff only;
-this project never fabricates people and presents them as LS Barber's own.
+This slot is deliberately left as a placeholder (a duotone gradient) rather
+than generated imagery — it's where authenticity matters most (Step 9:
+"the actual salon section should remain ready for genuine LS Barber
+photographs"). Drop the real interior shot in and it replaces the
+placeholder automatically.
+
+Specs for any new photo: 2400px on the long edge, JPEG q80 or WebP, no
+on-image text/logos — typography is handled by the site.

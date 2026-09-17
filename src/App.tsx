@@ -3,7 +3,7 @@ import { Hero } from "./components/Hero/Hero";
 import { Statement } from "./components/Statement/Statement";
 import { Craft } from "./components/Craft/Craft";
 import { Services } from "./components/Services/Services";
-import { Gallery } from "./components/Gallery/Gallery";
+import { Atmosphere } from "./components/Atmosphere/Atmosphere";
 import { Salon } from "./components/Salon/Salon";
 import { Reputation } from "./components/Reputation/Reputation";
 import { Booking } from "./components/Booking/Booking";
@@ -22,7 +22,7 @@ export default function App() {
         <Statement />
         <Craft />
         <Services />
-        <Gallery />
+        <Atmosphere />
         <Salon />
         <Reputation />
         <Booking />

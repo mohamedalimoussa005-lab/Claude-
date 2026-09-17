@@ -7,6 +7,7 @@
 html {
   background: var(--ink);
   color-scheme: dark;
+  overflow-x: hidden;
 }
 
 body {

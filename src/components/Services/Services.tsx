@@ -1,5 +1,7 @@
 import { useEffect, useRef } from "react";
-import { gsap } from "../../lib/gsap";
+import { ArtPanel } from "../ArtPanel/ArtPanel";
+import { SplitWords } from "../SplitWords/SplitWords";
+import { gsap, DESKTOP_QUERY } from "../../lib/gsap";
 import { site } from "../../config/site";
 import "./Services.css";
 
@@ -12,18 +14,43 @@ const SERVICES = [
 
 export function Services() {
   const sectionRef = useRef<HTMLDivElement>(null);
+  const visualRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const section = sectionRef.current;
     if (!section) return;
     const ctx = gsap.context(() => {
+      gsap.from(visualRef.current, {
+        scale: 1.1,
+        opacity: 0,
+        duration: 1.2,
+        ease: "power2.out",
+        scrollTrigger: { trigger: section, start: "top 78%" },
+      });
+
+      gsap.from(".split-words__word", {
+        yPercent: 110,
+        duration: 0.9,
+        ease: "power3.out",
+        stagger: 0.05,
+        scrollTrigger: { trigger: section, start: "top 65%" },
+      });
+
       gsap.from(".service-row", {
         opacity: 0,
         y: 26,
         duration: 0.7,
         stagger: 0.08,
         ease: "power2.out",
-        scrollTrigger: { trigger: section, start: "top 70%" },
+        scrollTrigger: { trigger: ".services__list", start: "top 82%" },
+      });
+
+      gsap.matchMedia().add(DESKTOP_QUERY, () => {
+        gsap.to(visualRef.current, {
+          scale: 1.06,
+          ease: "none",
+          scrollTrigger: { trigger: section, start: "top bottom", end: "bottom top", scrub: true },
+        });
       });
     }, section);
     return () => ctx.revert();
@@ -31,8 +58,23 @@ export function Services() {
 
   return (
     <section className="services" ref={sectionRef}>
+      <div className="services__hero">
+        <div className="services__visual" ref={visualRef}>
+          <ArtPanel
+            src="barber-tools.jpg"
+            tone="tools"
+            alt="Outils de coiffure LS Barber : tondeuse, ciseaux, peigne"
+            className="services__panel"
+          />
+          <div className="services__visual-scrim" aria-hidden="true" />
+        </div>
+        <div className="services__visual-type">
+          <p className="eyebrow">Le nécessaire</p>
+          <SplitWords as="h2" text="Des outils choisis, pas accumulés." className="services__heading" />
+        </div>
+      </div>
+
       <div className="container services__inner">
-        <p className="eyebrow">Prestations</p>
         <ul className="services__list">
           {SERVICES.map((s) => (
             <li className="service-row" key={s.n}>
