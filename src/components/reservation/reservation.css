@@ -1,0 +1,543 @@
+/* ============================================================
+   Shared visual system for the booking flow — same tokens as the
+   rest of the site (near-black, bone, brass), no generic SaaS look.
+   ============================================================ */
+
+.rsv-page {
+  min-height: 100svh;
+  background: var(--ink);
+  display: flex;
+  flex-direction: column;
+}
+
+.rsv-main {
+  flex: 1;
+  width: 100%;
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: clamp(1.5rem, 5vh, 3rem) var(--gutter) 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(1.75rem, 4vh, 2.5rem);
+}
+
+/* ---- header ---- */
+
+.rsv-header {
+  padding: 1.4rem var(--gutter) 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.rsv-header__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rsv-header__mark {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  color: var(--bone);
+}
+
+.rsv-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.rsv-header__phone {
+  font-size: var(--fs-micro);
+  color: var(--bone-dim);
+  display: none;
+}
+
+.rsv-header__back {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bone-dim);
+  border-bottom: 1px solid var(--line-strong);
+  padding-bottom: 0.15rem;
+  transition: color 0.3s var(--ease-premium);
+}
+
+.rsv-header__back:hover {
+  color: var(--brass);
+}
+
+.rsv-header__demo {
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
+  color: var(--ash);
+}
+
+@media (min-width: 640px) {
+  .rsv-header__phone {
+    display: inline;
+  }
+}
+
+/* ---- step indicator ---- */
+
+.rsv-steps {
+  list-style: none;
+  display: flex;
+  gap: 0.5rem;
+  padding: 0;
+  margin: 0 var(--gutter);
+  border-top: 1px solid var(--line);
+  padding-top: 1.1rem;
+}
+
+.rsv-steps__item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border-top: 2px solid var(--line-strong);
+  padding-top: 0.5rem;
+}
+
+.rsv-steps__item--done {
+  border-top-color: var(--brass);
+}
+
+.rsv-steps__item--active {
+  border-top-color: var(--bone);
+}
+
+.rsv-steps__n {
+  font-family: var(--font-serif);
+  font-style: italic;
+  font-size: 0.75rem;
+  color: var(--ash);
+}
+
+.rsv-steps__item--active .rsv-steps__n {
+  color: var(--brass);
+}
+
+.rsv-steps__label {
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ash);
+  display: none;
+}
+
+.rsv-steps__item--active .rsv-steps__label {
+  color: var(--bone);
+}
+
+@media (min-width: 560px) {
+  .rsv-steps__label {
+    display: block;
+  }
+}
+
+/* ---- generic step ---- */
+
+.rsv-step {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  animation: rsv-step-in 0.45s var(--ease-premium);
+}
+
+@keyframes rsv-step-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rsv-step__title {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  font-size: clamp(1.7rem, 6vw, 2.6rem);
+  line-height: 1.08;
+  color: var(--bone);
+  margin-top: 0.4rem;
+}
+
+.rsv-step__loading {
+  color: var(--bone-dim);
+  font-size: var(--fs-body);
+}
+
+/* ---- service list ---- */
+
+.rsv-service-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.rsv-service-card {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1.1rem 1.25rem;
+  background: var(--ink-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  transition: border-color 0.3s var(--ease-premium), background 0.3s var(--ease-premium);
+}
+
+.rsv-service-card:hover {
+  border-color: var(--line-strong);
+}
+
+.rsv-service-card--selected {
+  border-color: var(--brass);
+  background: rgba(200, 164, 100, 0.08);
+}
+
+.rsv-service-card__name {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  color: var(--bone);
+}
+
+.rsv-service-card__detail {
+  font-size: 0.85rem;
+  color: var(--ash);
+}
+
+.rsv-service-card__meta {
+  font-size: 0.78rem;
+  color: var(--brass);
+  letter-spacing: 0.04em;
+  margin-top: 0.2rem;
+}
+
+/* ---- calendar ---- */
+
+.rsv-calendar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.rsv-calendar__nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rsv-calendar__nav button {
+  background: none;
+  border: 1px solid var(--line-strong);
+  color: var(--bone);
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 0.3s var(--ease-premium), color 0.3s var(--ease-premium), opacity 0.3s;
+}
+
+.rsv-calendar__nav button:hover:not(:disabled) {
+  border-color: var(--brass);
+  color: var(--brass);
+}
+
+.rsv-calendar__nav button:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.rsv-calendar__month {
+  font-family: var(--font-serif);
+  font-style: italic;
+  color: var(--bone);
+  font-size: 1.05rem;
+}
+
+.rsv-calendar__weekdays,
+.rsv-calendar__grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 0.35rem;
+}
+
+.rsv-calendar__weekdays span {
+  text-align: center;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: var(--ash);
+}
+
+.rsv-calendar__cell {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  color: var(--ash);
+  font-size: 0.85rem;
+  cursor: default;
+}
+
+.rsv-calendar__cell--blank {
+  border: none;
+}
+
+.rsv-calendar__cell--available {
+  color: var(--bone);
+  border-color: var(--line);
+  cursor: pointer;
+  transition: border-color 0.3s var(--ease-premium), color 0.3s var(--ease-premium);
+}
+
+.rsv-calendar__cell--available:hover {
+  border-color: var(--brass);
+  color: var(--brass);
+}
+
+.rsv-calendar__cell--selected {
+  background: var(--brass);
+  border-color: var(--brass);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ---- time grid ---- */
+
+.rsv-time-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.6rem;
+}
+
+.rsv-time-slot {
+  padding: 0.75rem 0.5rem;
+  background: var(--ink-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--bone);
+  font-size: 0.9rem;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: border-color 0.3s var(--ease-premium), background 0.3s var(--ease-premium), color 0.3s var(--ease-premium);
+}
+
+.rsv-time-slot:hover {
+  border-color: var(--line-strong);
+}
+
+.rsv-time-slot--selected {
+  background: var(--brass);
+  border-color: var(--brass);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+@media (min-width: 500px) {
+  .rsv-time-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+/* ---- form ---- */
+
+.rsv-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.rsv-form__row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.25rem;
+}
+
+.rsv-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.rsv-field__label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ash);
+}
+
+.rsv-field input {
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--line-strong);
+  color: var(--bone);
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  padding: 0.5rem 0.1rem;
+  border-radius: 0;
+  transition: border-color 0.3s var(--ease-premium);
+}
+
+.rsv-field input:focus {
+  outline: none;
+  border-bottom-color: var(--brass);
+}
+
+.rsv-field input.rsv-field__input--error {
+  border-bottom-color: var(--error);
+}
+
+.rsv-field__error {
+  font-size: 0.75rem;
+  color: var(--error);
+}
+
+@media (min-width: 560px) {
+  .rsv-form__row {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* ---- summary ---- */
+
+.rsv-summary {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border-top: 1px solid var(--line);
+}
+
+.rsv-summary__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-block: 1.1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.rsv-summary__row dt {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ash);
+  margin-bottom: 0.3rem;
+}
+
+.rsv-summary__row dd {
+  margin: 0;
+  color: var(--bone);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.rsv-summary__edit {
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--brass);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  border-bottom: 1px solid rgba(200, 164, 100, 0.4);
+  padding-bottom: 0.1rem;
+}
+
+.rsv-summary__error {
+  color: var(--error);
+  font-size: 0.9rem;
+}
+
+.rsv-confirm-btn {
+  width: 100%;
+  justify-content: center;
+  padding-block: 1rem;
+}
+
+/* ---- confirmation ---- */
+
+.rsv-step--confirmation {
+  align-items: flex-start;
+  text-align: left;
+}
+
+.rsv-confirmation__recap {
+  font-family: var(--font-display);
+  font-size: clamp(1.3rem, 4.5vw, 1.8rem);
+  line-height: 1.35;
+  color: var(--bone);
+}
+
+.rsv-confirmation__demo {
+  font-size: 0.78rem;
+  color: var(--ash);
+  border-left: 2px solid var(--line-strong);
+  padding-left: 0.75rem;
+}
+
+.rsv-confirmation__actions {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.rsv-confirmation__phone {
+  font-size: 0.85rem;
+  color: var(--bone-dim);
+}
+
+.rsv-confirmation__phone a {
+  color: var(--brass);
+  border-bottom: 1px solid rgba(200, 164, 100, 0.4);
+}
+
+/* ---- footer nav (back / continue) ---- */
+
+.rsv-footer-nav {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem var(--gutter);
+  background: rgba(10, 10, 10, 0.86);
+  backdrop-filter: blur(14px) saturate(140%);
+  border-top: 1px solid var(--line);
+}
+
+.rsv-footer-nav__continue {
+  min-width: 9rem;
+  justify-content: center;
+}
+
+.rsv-footer-nav__back {
+  background: none;
+  border: none;
+  color: var(--bone-dim);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 0.6rem 0;
+}
+
+.rsv-footer-nav__back:hover {
+  color: var(--bone);
+}

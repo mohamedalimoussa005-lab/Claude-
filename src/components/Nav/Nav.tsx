@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { site } from "../../config/site";
 import "./Nav.css";
 
@@ -38,9 +39,9 @@ export function Nav() {
           <a href={site.phoneHref} className="nav__phone">
             {site.phoneDisplay}
           </a>
-          <a href={site.bookingUrl || site.phoneHref} className="btn btn-solid nav__cta">
+          <Link to={site.reservationPath} className="btn btn-solid nav__cta">
             Réserver
-          </a>
+          </Link>
         </div>
       </div>
     </header>

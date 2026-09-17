@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { ArtPanel } from "../ArtPanel/ArtPanel";
 import { gsap, ScrollTrigger, DESKTOP_QUERY } from "../../lib/gsap";
 import { site } from "../../config/site";
@@ -93,9 +94,9 @@ export function Hero() {
         <p className="eyebrow">{site.city}</p>
         <p className="hero__tagline">Un fauteuil. Un geste précis. Une identité affirmée.</p>
         <div className="hero__actions">
-          <a className="btn btn-solid" href={site.bookingUrl || site.phoneHref}>
+          <Link className="btn btn-solid" to={site.reservationPath}>
             Prendre rendez-vous
-          </a>
+          </Link>
           <a className="btn" href="#craft">
             Découvrir le métier
           </a>

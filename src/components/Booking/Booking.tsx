@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
 import { SplitWords } from "../SplitWords/SplitWords";
 import { gsap } from "../../lib/gsap";
 import { site } from "../../config/site";
@@ -39,9 +40,9 @@ export function Booking() {
         </p>
 
         <div className="booking__actions">
-          <a href={site.bookingUrl || site.phoneHref} className="btn btn-solid booking__cta">
-            {site.bookingUrl ? "Réserver en ligne" : "Appeler pour réserver"}
-          </a>
+          <Link to={site.reservationPath} className="btn btn-solid booking__cta">
+            Réserver en ligne
+          </Link>
           <a href={site.mapsHref} target="_blank" rel="noreferrer" className="btn">
             Itinéraire
           </a>

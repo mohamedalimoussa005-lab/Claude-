@@ -1,0 +1,127 @@
+.admin-page {
+  min-height: 100svh;
+  background: var(--ink);
+  color: var(--bone);
+}
+
+.admin-header {
+  padding: 1.4rem var(--gutter) 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.admin-header__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.admin-header__mark {
+  font-family: var(--font-display);
+  font-size: 1.4rem;
+  color: var(--bone);
+}
+
+.admin-header__back {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--bone-dim);
+  border-bottom: 1px solid var(--line-strong);
+  padding-bottom: 0.15rem;
+}
+
+.admin-header__badge {
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--brass);
+  max-width: 42rem;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 1.5rem;
+  padding: 1rem var(--gutter);
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.admin-tabs__item {
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ash);
+}
+
+.admin-tabs__item--active {
+  color: var(--bone);
+  border-bottom: 2px solid var(--brass);
+  padding-bottom: 0.6rem;
+}
+
+.admin-tabs__item--soon {
+  opacity: 0.5;
+}
+
+.admin-tabs__item--soon em {
+  font-style: italic;
+  font-size: 0.68rem;
+  margin-left: 0.25rem;
+}
+
+.admin-main {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 2rem var(--gutter) 4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2.5rem;
+}
+
+.admin-day__title {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--bone);
+  margin-bottom: 0.9rem;
+}
+
+.admin-day__empty {
+  color: var(--ash);
+  font-size: 0.9rem;
+}
+
+.admin-day__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+
+.admin-row {
+  display: grid;
+  grid-template-columns: 4rem 1fr auto;
+  gap: 1rem;
+  align-items: baseline;
+  padding-block: 0.85rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+
+.admin-row__time {
+  font-family: var(--font-serif);
+  font-style: italic;
+  color: var(--brass);
+}
+
+.admin-row__name {
+  color: var(--bone);
+}
+
+.admin-row__service {
+  color: var(--ash);
+  text-align: right;
+}

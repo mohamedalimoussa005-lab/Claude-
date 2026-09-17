@@ -9,6 +9,7 @@
   --brass-bright: #e6c583;
   --line: rgba(244, 239, 228, 0.14);
   --line-strong: rgba(244, 239, 228, 0.28);
+  --error: #d98a76;
 
   /* type */
   --font-display: "Anton", "Arial Narrow", sans-serif;

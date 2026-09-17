@@ -10,8 +10,8 @@ export const site = {
   reviewCount: 37,
   category: "Salon de coiffure",
   mapsHref: "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent("LS Barber, 21 Rue Saint-Hérem, 63000 Clermont-Ferrand"),
-  // No online booking URL was supplied — wire it up here once LS Barber
-  // shares their real booking-platform link. Until then every "Réserver"
-  // CTA on the site falls back to a phone call.
-  bookingUrl: "",
+  // All "Réserver" / "Prendre rendez-vous" CTAs route here — an internal
+  // booking flow (src/pages/Reservation.tsx), never an external platform
+  // and never tel:. See src/booking/ for the service-layer architecture.
+  reservationPath: "/reservation",
 };
