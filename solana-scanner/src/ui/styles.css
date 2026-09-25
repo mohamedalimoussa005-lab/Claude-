@@ -567,3 +567,39 @@ ul.signals.anomalies li::marker {
 .detail details {
   margin-top: 12px;
 }
+
+/* ─── On-chain ────────────────────────────────────────────────────────── */
+
+.onchain {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: #1a1330;
+}
+
+.onchain h3 {
+  margin-top: 0;
+}
+
+.onchain h4 {
+  margin: 16px 0 4px;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+.onchain .detail-scores code {
+  word-break: break-all;
+  color: var(--muted);
+}
+
+.onchain-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+tr.excluded-row td {
+  color: var(--muted);
+  font-style: italic;
+}

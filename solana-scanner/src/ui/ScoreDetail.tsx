@@ -3,11 +3,25 @@ import { LABEL_DISCLAIMER } from "../scoring/config.ts";
 import { CATEGORY_ORDER } from "../scoring/score.ts";
 import type { CategoryScore, ScoredPair } from "../scoring/score.ts";
 import { ConfidenceBadge, LabelBadge } from "./LabelBadge.tsx";
+import { OnchainPanel } from "./OnchainPanel.tsx";
+import type { OnchainState } from "./OnchainPanel.tsx";
 import { shortAddress } from "./format.ts";
 
 const pts = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 
-export function ScoreDetail({ row, fetchedAt, onClose }: { row: ScoredPair; fetchedAt: number; onClose: () => void }) {
+export function ScoreDetail({
+  row,
+  fetchedAt,
+  onClose,
+  onchain,
+  onAnalyzeOnchain,
+}: {
+  row: ScoredPair;
+  fetchedAt: number;
+  onClose: () => void;
+  onchain: OnchainState | undefined;
+  onAnalyzeOnchain: () => void;
+}) {
   const { pair: p, score: s } = row;
 
   useEffect(() => {
@@ -86,6 +100,9 @@ export function ScoreDetail({ row, fetchedAt, onClose }: { row: ScoredPair; fetc
           Une anomalie signale un motif inhabituel dans les données ; elle ne prouve pas une manipulation.
         </p>
 
+        <OnchainPanel state={onchain} onAnalyze={onAnalyzeOnchain} />
+
+        <h3>Détail des scores DEX Screener</h3>
         <details open>
           <summary>Opportunity : {s.opportunity}/100, points par catégorie</summary>
           <table className="small breakdown">

@@ -9,7 +9,11 @@ import { NO_FILTERS, applyFilters } from "../scoring/filters.ts";
 import type { ScoreFilters } from "../scoring/filters.ts";
 import { scorePairs } from "../scoring/score.ts";
 import type { Label, ScoredPair } from "../scoring/score.ts";
+import { SolanaRpc } from "../onchain/rpc.ts";
+import { OnchainService, selectCandidates } from "../onchain/service.ts";
 import { FiltersPanel } from "./FiltersPanel.tsx";
+import { OnchainBadge } from "./OnchainPanel.tsx";
+import type { OnchainState } from "./OnchainPanel.tsx";
 import { ConfidenceBadge, LabelBadge } from "./LabelBadge.tsx";
 import { ScoreDetail, qualityLevel, riskLevel } from "./ScoreDetail.tsx";
 import { age, count, usdCompact } from "./format.ts";
@@ -174,6 +178,30 @@ export function App() {
   const [sort, setSort] = useState<{ id: string; dir: SortDir }>({ id: "opportunity", dir: -1 });
   const [filters, setFilters] = useState<ScoreFilters>(NO_FILTERS);
   const [selected, setSelected] = useState<string | null>(null);
+  const [onchain, setOnchain] = useState<Record<string, OnchainState>>({});
+  const onchainStarted = useRef(new Set<string>());
+  const onchainQueue = useRef<Promise<void>>(Promise.resolve());
+
+  const onchainService = useMemo(
+    () => new OnchainService(new SolanaRpc({ url: import.meta.env.VITE_SOLANA_RPC_URL ?? "/solana-rpc" })),
+    [],
+  );
+
+  /** Queues one on-chain analysis (runs one token at a time to spare the public RPC). */
+  const runOnchain = useCallback(
+    (row: ScoredPair, force = false) => {
+      const mint = row.pair.tokenAddress;
+      onchainStarted.current.add(mint);
+      setOnchain((s) => ({ ...s, [mint]: { status: "loading" } }));
+      onchainQueue.current = onchainQueue.current.then(() =>
+        onchainService.analyze(row, force).then(
+          (result) => setOnchain((s) => ({ ...s, [mint]: { status: "done", result } })),
+          (err: unknown) => setOnchain((s) => ({ ...s, [mint]: { status: "error", error: err instanceof Error ? err.message : String(err) } })),
+        ),
+      );
+    },
+    [onchainService],
+  );
 
   const client = useMemo(
     () =>
@@ -209,24 +237,58 @@ export function App() {
     return scorePairs(base, result.fetchedAt);
   }, [result, onePerToken]);
 
-  const rows = useMemo(() => {
+  const filteredRows = useMemo(() => {
     const q = filter.trim().toLowerCase();
     const textFiltered = q
       ? scored.filter(({ pair: p }) =>
           [p.tokenName, p.tokenSymbol, p.tokenAddress, p.pairAddress, p.dexId].some((v) => v?.toLowerCase().includes(q)),
         )
       : scored;
-    const col = COLUMNS.find((c) => c.id === sort.id) ?? COLUMNS[1];
-    return [...applyFilters(textFiltered, filters)].sort((a, b) => compare(a, b, col, sort.dir));
-  }, [scored, filter, filters, sort]);
+    return applyFilters(textFiltered, filters);
+  }, [scored, filter, filters]);
 
   const labelCounts = useMemo(() => {
     const out = { WATCH: 0, MOMENTUM: 0, "HIGH RISK": 0 } as Record<Label, number>;
-    for (const r of rows) if (r.score.label) out[r.score.label]++;
+    for (const r of filteredRows) if (r.score.label) out[r.score.label]++;
     return out;
-  }, [rows]);
+  }, [filteredRows]);
 
   const selectedRow = selected ? scored.find((r) => r.pair.pairAddress === selected) ?? null : null;
+
+  // Only the best candidates among the rows that pass the filters get an automatic on-chain analysis.
+  const candidates = useMemo(() => selectCandidates(filteredRows), [filteredRows]);
+  const candidateSet = useMemo(() => new Set(candidates.map((c) => c.pair.tokenAddress)), [candidates]);
+  useEffect(() => {
+    onchainStarted.current.clear();
+    setOnchain({});
+  }, [result]);
+  useEffect(() => {
+    for (const c of candidates) if (!onchainStarted.current.has(c.pair.tokenAddress)) runOnchain(c);
+  }, [candidates, runOnchain]);
+
+  const columns = useMemo<Column[]>(
+    () => [
+      ...COLUMNS,
+      {
+        id: "onchain",
+        label: "On-chain",
+        title: "On-chain Risk /100 et confiance (analyse automatique des meilleurs candidats, ou au clic)",
+        numeric: true,
+        group: "score",
+        sortValue: (r) => {
+          const st = onchain[r.pair.tokenAddress];
+          return st?.status === "done" ? st.result.analysis.risk : null;
+        },
+        render: (r) => <OnchainBadge state={onchain[r.pair.tokenAddress]} candidate={candidateSet.has(r.pair.tokenAddress)} />,
+      },
+    ],
+    [onchain, candidateSet],
+  );
+
+  const rows = useMemo(() => {
+    const col = columns.find((c) => c.id === sort.id) ?? columns[1];
+    return [...filteredRows].sort((a, b) => compare(a, b, col, sort.dir));
+  }, [filteredRows, columns, sort]);
 
   const coverage = useMemo(() => (result ? fieldCoverage(result.pairs) : null), [result]);
 
@@ -305,7 +367,7 @@ export function App() {
         <table className="scores">
           <thead>
             <tr>
-              {COLUMNS.map((c) => (
+              {columns.map((c) => (
                 <th
                   key={c.id}
                   className={[c.numeric ? "num" : "", c.group ? `g-${c.group}` : ""].join(" ").trim() || undefined}
@@ -325,7 +387,7 @@ export function App() {
                 className={selected === r.pair.pairAddress ? "clickable selected" : "clickable"}
                 onClick={() => setSelected(r.pair.pairAddress)}
               >
-                {COLUMNS.map((c) => (
+                {columns.map((c) => (
                   <td key={c.id} className={c.numeric ? "num" : undefined}>
                     {c.render(r)}
                   </td>
@@ -334,7 +396,7 @@ export function App() {
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={COLUMNS.length} className="empty">
+                <td colSpan={columns.length} className="empty">
                   {loading ? "Chargement des données DEX Screener…" : "Aucune paire ne correspond aux filtres."}
                 </td>
               </tr>
@@ -344,7 +406,13 @@ export function App() {
       </div>
 
       {selectedRow && result && (
-        <ScoreDetail row={selectedRow} fetchedAt={result.fetchedAt} onClose={() => setSelected(null)} />
+        <ScoreDetail
+          row={selectedRow}
+          fetchedAt={result.fetchedAt}
+          onClose={() => setSelected(null)}
+          onchain={onchain[selectedRow.pair.tokenAddress]}
+          onAnalyzeOnchain={() => runOnchain(selectedRow, onchain[selectedRow.pair.tokenAddress] !== undefined)}
+        />
       )}
 
       {result && coverage && (

@@ -15,6 +15,7 @@ npm install
 npm run dev          # interface sur http://localhost:5173
 npm run test:live    # test réel de tous les endpoints (nécessite l'accès réseau à api.dexscreener.com)
 npm run score:live   # scan réel + top 10 par Opportunity Score, détail des points et anomalies (-- 20 pour un top 20)
+npm run onchain:live # scan réel → sélection des candidats → analyse on-chain (RPC Solana public), DEX et on-chain côte à côte
 npm test             # tests unitaires hors ligne (normalisation, rate limit, retries, pipeline, scoring)
 npm run typecheck
 ```
@@ -141,3 +142,68 @@ Vol 5m, Vol 1h, Buys/Sells (5 min et 1 h), Age. Tri par défaut sur l'Opportunit
 Filtres : âge max, market cap min/max, liquidité min, volume 1 h min, Opportunity min, Risk max, Quality min.
 Un clic sur une ligne ouvre « Why this score? » : les quatre mesures, Positive signals, Negative signals, Anomalies,
 puis le détail des points (Opportunity par catégorie, déductions de Quality, calcul de Confidence, facteurs de Risk).
+
+## Étape 3 : analyse on-chain (On-chain Risk)
+
+Code : `src/onchain/`. Couche **indépendante** des scores DEX Screener (aucun score combiné). Lecture seule :
+aucune transaction, aucun wallet. Tous les poids, seuils, limites et adresses reconnues sont dans
+[`src/onchain/config.ts`](src/onchain/config.ts).
+
+### Sources de données (gratuites, sans clé)
+
+RPC public officiel `https://api.mainnet-beta.solana.com` (`SOLANA_RPC_URL` / `VITE_SOLANA_RPC_URL` pour un autre
+endpoint). Dans le navigateur, l'appel passe par le proxy Vite `/solana-rpc` : l'endpoint public répond 403 aux
+requêtes portant un en-tête `Origin: localhost`.
+
+| Donnée | Méthode | Sans clé ? |
+|---|---|---|
+| Mint / freeze authority, programme (SPL / Token-2022), extensions | `getAccountInfo` (jsonParsed) | oui |
+| Tous les comptes du token → holders, top N, nombre de holders | `getProgramAccounts` + filtre `memcmp` sur le mint, `dataSlice` owner + montant | oui (≈ 0,5 s pour quelques milliers de comptes) |
+| Type des gros comptes (wallet, pool, bonding curve, programme) | `getMultipleAccounts` | oui |
+| Deployment-associated wallet (pump.fun) | décodage du champ `creator` de la bonding curve ou `coin_creator` de la pool PumpSwap | oui |
+| Deployment-associated wallet (autres) | fee payer de la transaction `initializeMint`, si l'historique du mint tient en 3 pages | oui, souvent hors de portée |
+| Activité du deployment-associated wallet, financement des gros wallets | `getSignaturesForAddress`, `getTransaction`, `getBalance` | oui, mais limité |
+
+Limites observées sur les endpoints publics : `getTokenLargestAccounts` renvoie 429 en continu (non utilisé) ;
+publicnode refuse `getProgramAccounts` sans token ; limites par méthode (≈ 10–40 req / 10 s). Le client applique
+un limiteur global et par méthode, des retries avec backoff, et un cache TTL (transactions 24 h, holders 3 min…).
+
+Ce qui nécessiterait un fournisseur externe (Helius, Birdeye, Solscan Pro, etc.) : historique complet des gros
+wallets (pagination illimitée), identification des exchanges, label des wallets, création des tokens non-pump.fun
+au-delà de 3000 transactions, nombre de holders pour les tokens à très grand nombre de comptes, données de
+bundles / snipers au lancement.
+
+### Pipeline
+
+DEX Screener → filtres → Opportunity / Risk / Quality → `selectCandidates` (Opportunity ≥ 50, DEX Risk ≤ 49,
+Quality ≥ 40, 5 max) → **seulement ensuite** analyse on-chain (≈ 25–40 appels RPC par token). Les autres tokens
+s'analysent au clic.
+
+### Holders : RAW et ADJUSTED
+
+RAW = % de l'offre totale. ADJUSTED = % de l'offre hors comptes techniques **vérifiés** : propriétaire = adresse de
+la paire DEX Screener, compte détenu par un programme AMM / bonding curve connu (vérifié on-chain), autorité de pool
+documentée, adresse de burn. Un compte détenu par un programme inconnu (locker, vesting…) n'est **pas** exclu.
+
+### On-chain Risk (0–100)
+
+| Catégorie | Max | Contenu |
+|---|---|---|
+| Authorities | 20 | mint active (12), freeze active (10), inconnue (6 chacune), extensions Token-2022 à risque (permanent delegate, transfer hook, frais de transfert, gel par défaut, non transférable) |
+| Holder concentration | 30 | plus gros holder non technique, top 5, top 10, nombre de holders, distribution extrêmement concentrée (top 10 ≥ 70 %) ; inconnue : 18 |
+| Creator / deployer | 20 | tokens détenus, ventes et transferts vers d'autres wallets parmi ses transactions récentes ; inconnu : 6 |
+| Wallet relationships | 15 | part du plus grand groupe de « potentially related wallets », liens forts ; non analysé : 6 |
+| Data completeness | 15 | points par section de données indisponible |
+
+Wallets potentiellement liés (heuristiques, jamais « same owner ») : financés dans la même transaction, l'un
+financé par l'autre, présents dans les mêmes transactions, financés par la même adresse à quelques minutes
+d'écart (liens forts) ; même adresse de financement à des moments différents (moyen) ; adresse de financement
+très active, probablement un exchange (faible, non regroupé).
+
+**On-chain Confidence** : part des sections vérifiées (mint 25, holders 25, classification 15, deployment wallet 15,
+activité 10, wallets 10) → HIGH ≥ 80, MEDIUM ≥ 50 ; LOW si le mint ou les holders manquent.
+
+Une donnée inconnue reste UNKNOWN et ajoute des points de risque : elle n'améliore jamais le score.
+Le panneau de détail affiche : authorities, concentration RAW / ADJUSTED, deployment-associated wallet,
+potentially related wallets, On-chain Risk et Confidence, puis RED FLAGS, POSITIVE STRUCTURAL SIGNALS et
+UNKNOWN / NOT VERIFIED. Aucun token n'est présenté comme « safe ».
