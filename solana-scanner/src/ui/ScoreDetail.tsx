@@ -5,6 +5,8 @@ import type { CategoryScore, ScoredPair } from "../scoring/score.ts";
 import { ConfidenceBadge, LabelBadge } from "./LabelBadge.tsx";
 import { OnchainPanel } from "./OnchainPanel.tsx";
 import type { OnchainState } from "./OnchainPanel.tsx";
+import { WalletPanel } from "./WalletPanel.tsx";
+import type { WalletState } from "./WalletPanel.tsx";
 import { shortAddress } from "./format.ts";
 
 const pts = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
@@ -15,12 +17,16 @@ export function ScoreDetail({
   onClose,
   onchain,
   onAnalyzeOnchain,
+  wallets,
+  onAnalyzeWallets,
 }: {
   row: ScoredPair;
   fetchedAt: number;
   onClose: () => void;
   onchain: OnchainState | undefined;
   onAnalyzeOnchain: () => void;
+  wallets: WalletState | undefined;
+  onAnalyzeWallets: () => void;
 }) {
   const { pair: p, score: s } = row;
 
@@ -101,6 +107,7 @@ export function ScoreDetail({
         </p>
 
         <OnchainPanel state={onchain} onAnalyze={onAnalyzeOnchain} />
+        <WalletPanel state={wallets} onchainReady={onchain?.status === "done"} onAnalyze={onAnalyzeWallets} />
 
         <h3>Détail des scores DEX Screener</h3>
         <details open>

@@ -603,3 +603,36 @@ tr.excluded-row td {
   color: var(--muted);
   font-style: italic;
 }
+
+/* ─── Wallet intelligence ─────────────────────────────────────────────── */
+
+.onchain.wallets {
+  border-color: #1f6feb;
+  background: #0d1a2e;
+}
+
+.table-wrap.inner {
+  max-height: none;
+  margin-top: 6px;
+}
+
+.wallet-table td,
+.wallet-table th {
+  white-space: nowrap;
+}
+
+.wallet-profile {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.wallet-profile h5 {
+  margin: 12px 0 2px;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

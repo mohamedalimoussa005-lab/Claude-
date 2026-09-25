@@ -89,11 +89,13 @@ export interface RawAccount {
 
 export interface SignatureInfo {
   signature: string;
+  slot?: number;
   blockTime: number | null;
   err: unknown;
 }
 
 export interface ParsedTransaction {
+  slot?: number;
   blockTime: number | null;
   transaction: {
     signatures: string[];
@@ -190,7 +192,7 @@ export class SolanaRpc {
   getTransaction(signature: string): Promise<ParsedTransaction | null> {
     return this.cached(
       "getTransaction",
-      [signature, { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 }],
+      [signature, { encoding: "jsonParsed", maxSupportedTransactionVersion: 1 }],
       this.config.cacheTtlMs.transaction,
       (r) => (r as ParsedTransaction | null) ?? null,
     );

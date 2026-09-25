@@ -13,6 +13,8 @@ import { SolanaRpc } from "../onchain/rpc.ts";
 import { OnchainService, selectCandidates } from "../onchain/service.ts";
 import { FiltersPanel } from "./FiltersPanel.tsx";
 import { OnchainBadge } from "./OnchainPanel.tsx";
+import { WalletIntelService } from "../wallets/service.ts";
+import type { WalletState } from "./WalletPanel.tsx";
 import type { OnchainState } from "./OnchainPanel.tsx";
 import { ConfidenceBadge, LabelBadge } from "./LabelBadge.tsx";
 import { ScoreDetail, qualityLevel, riskLevel } from "./ScoreDetail.tsx";
@@ -182,9 +184,36 @@ export function App() {
   const onchainStarted = useRef(new Set<string>());
   const onchainQueue = useRef<Promise<void>>(Promise.resolve());
 
-  const onchainService = useMemo(
-    () => new OnchainService(new SolanaRpc({ url: import.meta.env.VITE_SOLANA_RPC_URL ?? "/solana-rpc" })),
+  const client = useMemo(
+    () =>
+      new DexScreenerClient({
+        baseUrl: import.meta.env.VITE_DEXSCREENER_BASE_URL ?? "/dex",
+        onRequest: (entry) => setLog((prev) => [entry, ...prev].slice(0, 100)),
+      }),
     [],
+  );
+
+  const [walletIntel, setWalletIntel] = useState<Record<string, WalletState>>({});
+
+  const solanaRpc = useMemo(() => new SolanaRpc({ url: import.meta.env.VITE_SOLANA_RPC_URL ?? "/solana-rpc" }), []);
+  const onchainService = useMemo(() => new OnchainService(solanaRpc), [solanaRpc]);
+  const walletService = useMemo(() => new WalletIntelService(solanaRpc, client), [solanaRpc, client]);
+
+  /** Wallet discovery runs only on demand and only after the token's on-chain analysis (pipeline order). */
+  const runWallets = useCallback(
+    (row: ScoredPair, force = false) => {
+      const mint = row.pair.tokenAddress;
+      const oc = onchain[mint];
+      if (oc?.status !== "done") return;
+      setWalletIntel((s) => ({ ...s, [mint]: { status: "loading" } }));
+      onchainQueue.current = onchainQueue.current.then(() =>
+        walletService.analyze(row, oc.result, force).then(
+          (intel) => setWalletIntel((s) => ({ ...s, [mint]: { status: "done", intel } })),
+          (err: unknown) => setWalletIntel((s) => ({ ...s, [mint]: { status: "error", error: err instanceof Error ? err.message : String(err) } })),
+        ),
+      );
+    },
+    [onchain, walletService],
   );
 
   /** Queues one on-chain analysis (runs one token at a time to spare the public RPC). */
@@ -203,14 +232,6 @@ export function App() {
     [onchainService],
   );
 
-  const client = useMemo(
-    () =>
-      new DexScreenerClient({
-        baseUrl: import.meta.env.VITE_DEXSCREENER_BASE_URL ?? "/dex",
-        onRequest: (entry) => setLog((prev) => [entry, ...prev].slice(0, 100)),
-      }),
-    [],
-  );
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -412,6 +433,8 @@ export function App() {
           onClose={() => setSelected(null)}
           onchain={onchain[selectedRow.pair.tokenAddress]}
           onAnalyzeOnchain={() => runOnchain(selectedRow, onchain[selectedRow.pair.tokenAddress] !== undefined)}
+          wallets={walletIntel[selectedRow.pair.tokenAddress]}
+          onAnalyzeWallets={() => runWallets(selectedRow, walletIntel[selectedRow.pair.tokenAddress] !== undefined)}
         />
       )}
 

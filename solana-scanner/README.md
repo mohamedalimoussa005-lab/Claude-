@@ -16,6 +16,7 @@ npm run dev          # interface sur http://localhost:5173
 npm run test:live    # test réel de tous les endpoints (nécessite l'accès réseau à api.dexscreener.com)
 npm run score:live   # scan réel + top 10 par Opportunity Score, détail des points et anomalies (-- 20 pour un top 20)
 npm run onchain:live # scan réel → sélection des candidats → analyse on-chain (RPC Solana public), DEX et on-chain côte à côte
+npm run wallets:live # + wallet intelligence sur les candidats (lent : ≈ 1 transaction/s sur le RPC gratuit)
 npm test             # tests unitaires hors ligne (normalisation, rate limit, retries, pipeline, scoring)
 npm run typecheck
 ```
@@ -207,3 +208,47 @@ Une donnée inconnue reste UNKNOWN et ajoute des points de risque : elle n'amél
 Le panneau de détail affiche : authorities, concentration RAW / ADJUSTED, deployment-associated wallet,
 potentially related wallets, On-chain Risk et Confidence, puis RED FLAGS, POSITIVE STRUCTURAL SIGNALS et
 UNKNOWN / NOT VERIFIED. Aucun token n'est présenté comme « safe ».
+
+## Étape 4 : wallet intelligence
+
+Code : `src/wallets/` (config dans [`src/wallets/config.ts`](src/wallets/config.ts)). Aucun score combiné, aucun
+trading, aucun wallet utilisateur. Une adresse n'est pas une personne ; aucun wallet n'est une recommandation.
+
+### Ce que le RPC gratuit permet (mesuré)
+
+| Mesure | Résultat |
+|---|---|
+| `getTransaction` | ≈ 1 transaction/s (limite de méthode 10 / 10 s). Les transactions récentes exigent `maxSupportedTransactionVersion: 1` |
+| Première transaction d'un token | atteinte pour un token jeune (≈ 5 000–25 000 signatures) ; hors de portée au-delà du budget (25 pages) |
+| Historique des premiers acheteurs | sur un échantillon, 9/15 avaient ≥ 5 000 transactions (bots / snipers) et 5/15 étaient créés le jour même |
+
+Conséquence : reconstruire l'historique complet de swaps et le PnL d'un wallet actif coûterait plus d'une heure
+d'appels **par wallet** sans garantie d'atteindre son début. Le module ne fait donc **aucune reconstruction partielle** :
+- côté token (vérifiable) : premiers et derniers acheteurs décodés depuis les soldes avant/après de chaque
+  transaction (seuls les signataires sont des traders ; transferts, routes multi-tokens et quotes non-SOL sont
+  ignorés, pas devinés), délai d'entrée après la première transaction, montant en SOL, market cap d'entrée
+  (prix d'exécution × offre, USD estimé au prix SOL actuel), achats du deployment-associated wallet, acheteurs
+  dans le bloc de création ;
+- côté wallet : taille d'historique (5 pages max), financement initial, liens (réutilise les heuristiques de
+  l'étape 3), et historique de trades **seulement s'il est complet** (≤ 150 transactions, budget 300 transactions
+  par session). Sinon trades, PnL, rendements, entrées précoces et durée de détention restent UNKNOWN.
+- non calculable sans source de prix : multiple maximum après l'entrée (pas d'OHLCV via RPC).
+
+### Faux « smart wallets »
+
+Pénalités : deployment-associated wallet, financé par lui ou par le même financeur, financé moins d'1 h avant
+le lancement, wallet créé moins de 48 h avant son entrée, ≥ 5 000 transactions (bot / haute fréquence),
+micro-transactions, achète presque tous les nouveaux tokens, potentiellement lié à d'autres acheteurs,
+historique incomplet. Un ou deux trades gagnants ne suffisent jamais (poids de l'échantillon).
+
+**Wallet Quality (0–100)** : taille d'échantillon 25, régularité 15, entrées précoces 10, performance réalisée 15,
+pire position 15, complétude 20, moins les pénalités. **Wallet Confidence** : HIGH ≥ 25 positions évaluables avec
+historique complet, MEDIUM ≥ 10, sinon LOW.
+
+**Cluster adjustment** : les wallets potentiellement liés forment un seul cluster indépendant
+(« 3 wallets detected, 1 independent cluster »).
+
+### Pipeline
+
+DEX candidates → on-chain validation → (à la demande) wallet discovery sur le token → shortlist (8 wallets :
+premiers acheteurs puis plus gros) → faits par wallet et historique borné. Cache RPC + limiteurs.
