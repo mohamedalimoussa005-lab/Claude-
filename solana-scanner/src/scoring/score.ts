@@ -1,11 +1,13 @@
 /**
- * Scoring engine: turns one NormalizedPair into two independent scores.
+ * Scoring engine: turns one NormalizedPair into independent measures.
  *
- *   - Opportunity (0–100): quality of the setup and observed momentum,
+ *   - Opportunity (0–100): strength of the observed setup and momentum,
  *     split into six categories (see config.ts for every rule).
  *   - Risk (0–100): sum of risk factors, capped.
+ *   - Quality (0–100) and Confidence (LOW/MEDIUM/HIGH): credibility of the
+ *     data and of the activity (see quality.ts).
  *
- * Both are descriptions of current DEX Screener data, not predictions.
+ * All are descriptions of current DEX Screener data, not predictions.
  * Pure function of (pair, now, config): no I/O, deterministic, testable.
  *
  * A missing input is never read as 0: the item it feeds earns no points,
@@ -15,6 +17,15 @@
 import type { NormalizedPair } from "../domain/normalize.ts";
 import { SCORING_CONFIG } from "./config.ts";
 import type { Curve, ScoringConfig } from "./config.ts";
+import { interpolate } from "./curve.ts";
+import { ABSENT, fmtAge, fmtInt, fmtPct, fmtPts, fmtRatio, fmtShare, fmtUsd, round1 } from "./fmt.ts";
+import { IMPORTANT_FIELDS, observe } from "./metrics.ts";
+import type { Observed } from "./metrics.ts";
+import { computeConfidence, computeQuality } from "./quality.ts";
+import type { Anomaly, ConfidenceResult, QualityResult } from "./quality.ts";
+
+export { interpolate };
+export type { Anomaly, ConfidenceLevel, ConfidenceResult, QualityResult } from "./quality.ts";
 
 export type CategoryKey = "momentum" | "volume" | "buyPressure" | "liquidity" | "marketCap" | "age";
 
@@ -88,35 +99,22 @@ export interface PairScore {
   labelReason: string;
   /** Pair age in minutes at scoring time, null if pairCreatedAt is absent. */
   ageMinutes: number | null;
+  /** Quality score, integer 0–100, with its deductions and anomalies. */
+  quality: number;
+  qualityDetail: QualityResult;
+  confidence: ConfidenceResult;
+  signals: Signals;
+  /** Derived observations (average ticket, buy share, turnover…). */
+  observed: Observed;
+}
+
+export interface Signals {
+  positive: string[];
+  negative: string[];
+  anomalies: Anomaly[];
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────
-
-/** Piecewise-linear interpolation, clamped at both ends. */
-export function interpolate(curve: Curve, x: number): number {
-  if (curve.length === 0) return 0;
-  if (x <= curve[0][0]) return curve[0][1];
-  for (let i = 1; i < curve.length; i++) {
-    const [x1, y1] = curve[i];
-    if (x <= x1) {
-      const [x0, y0] = curve[i - 1];
-      return x1 === x0 ? y1 : y0 + ((x - x0) / (x1 - x0)) * (y1 - y0);
-    }
-  }
-  return curve[curve.length - 1][1];
-}
-
-const round1 = (n: number) => Math.round(n * 10) / 10;
-
-const ABSENT = "absent";
-const fmtPct = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(2)} %`;
-const fmtPts = (n: number) => `${n > 0 ? "+" : ""}${n.toFixed(2)} pts`;
-const fmtUsd = (n: number) =>
-  `$${new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(n)}`;
-const fmtRatio = (n: number) => `${n.toFixed(2)}×`;
-const fmtInt = (n: number) => new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(n);
-const fmtAge = (min: number) =>
-  min < 60 ? `${min.toFixed(0)} min` : min < 2_880 ? `${(min / 60).toFixed(1)} h` : `${(min / 1_440).toFixed(1)} j`;
 
 function curveItem(
   key: string,
@@ -152,19 +150,31 @@ function category(key: CategoryKey, max: number, items: ScoreItem[], cap?: { poi
   };
 }
 
-/** Minutes covered by the "h1" window: the pair's age if younger than an hour. */
-function h1WindowMinutes(ageMinutes: number | null): number {
-  if (ageMinutes === null) return 60;
-  return Math.min(60, Math.max(5, ageMinutes));
+/**
+ * Multiplies an item's points by `factor` (< 1) and records why in its note.
+ * Used when activity looks unreliable: the raw value is untouched, only the
+ * points it earns are reduced.
+ */
+function discount(item: ScoreItem, factor: number, reason: string): void {
+  if (factor >= 1 || item.missing || item.points <= 0) return;
+  const after = item.points * factor;
+  const msg = `${reason} : ×${factor.toFixed(2)}, ${item.points.toFixed(1)} → ${after.toFixed(1)} pts.`;
+  item.note = item.note ? `${item.note} ${msg}` : msg;
+  item.points = after;
 }
 
-function sum(a: number | null, b: number | null): number | null {
-  return a === null || b === null ? null : a + b;
+/** Context shared by the category scorers. */
+interface Ctx {
+  o: Observed;
+  q: QualityResult;
+  /** Multiplier for count-based items when the average ticket is very small. */
+  ticketFactor: number;
+  ticketReason: string;
 }
 
 // ─── Opportunity categories ─────────────────────────────────────────────────
 
-function scoreMomentum(p: NormalizedPair, ageMin: number | null, c: ScoringConfig["opportunity"]["momentum"]): CategoryScore {
+function scoreMomentum(p: NormalizedPair, { o }: Ctx, c: ScoringConfig["opportunity"]["momentum"]): CategoryScore {
   const items: ScoreItem[] = [
     curveItem("m5", "Variation prix 5 min", p.priceChangeM5, c.m5, c.m5Max, fmtPct, ["priceChange.m5"]),
     curveItem("h1", "Variation prix 1 h", p.priceChangeH1, c.h1, c.h1Max, fmtPct, ["priceChange.h1"]),
@@ -177,7 +187,7 @@ function scoreMomentum(p: NormalizedPair, ageMin: number | null, c: ScoringConfi
     ) as string[];
     items.push({ key: "accel", label: "Accélération récente", input: ABSENT, points: 0, max: c.accelMax, missing: true, note: absentNote(missing) });
   } else {
-    const avg5m = p.priceChangeH1 / (h1WindowMinutes(ageMin) / 5);
+    const avg5m = p.priceChangeH1 / (o.h1WindowMinutes / 5);
     const accel = p.priceChangeM5 - avg5m;
     items.push({
       key: "accel",
@@ -202,7 +212,7 @@ function scoreMomentum(p: NormalizedPair, ageMin: number | null, c: ScoringConfi
   return category("momentum", c.max, items, cap);
 }
 
-function scoreVolume(p: NormalizedPair, ageMin: number | null, c: ScoringConfig["opportunity"]["volume"]): CategoryScore {
+function scoreVolume(p: NormalizedPair, { o }: Ctx, c: ScoringConfig["opportunity"]["volume"], adj: ScoringConfig["opportunity"]["adjustments"]): CategoryScore {
   const items: ScoreItem[] = [
     curveItem("m5", "Volume 5 min", p.volumeM5, c.m5, c.m5Max, fmtUsd, ["volume.m5"]),
     curveItem("h1", "Volume 1 h", p.volumeH1, c.h1, c.h1Max, fmtUsd, ["volume.h1"]),
@@ -234,7 +244,7 @@ function scoreVolume(p: NormalizedPair, ageMin: number | null, c: ScoringConfig[
   } else if (p.volumeH1 <= 0) {
     items.push({ key: "accel", label: "Accélération du volume", input: "volume 1 h = $0", points: 0, max: c.accelMax, missing: false, note: "Aucun volume sur 1 h : accélération non calculable." });
   } else {
-    const avg5m = p.volumeH1 / (h1WindowMinutes(ageMin) / 5);
+    const avg5m = p.volumeH1 / (o.h1WindowMinutes / 5);
     const r = p.volumeM5 / avg5m;
     items.push({
       key: "accel",
@@ -244,6 +254,13 @@ function scoreVolume(p: NormalizedPair, ageMin: number | null, c: ScoringConfig[
       max: c.accelMax,
       missing: false,
     });
+  }
+
+  // A huge volume relative to liquidity is not automatically positive.
+  if (o.turnoverH1 !== null) {
+    const f = interpolate(adj.turnover, o.turnoverH1);
+    const why = `Volume 1 h = ${fmtRatio(o.turnoverH1)} la liquidité`;
+    for (const it of items) if (it.key === "m5" || it.key === "h1") discount(it, f, why);
   }
 
   return category("volume", c.max, items);
@@ -285,13 +302,24 @@ function ratioItem(
   };
 }
 
-function scoreBuyPressure(p: NormalizedPair, c: ScoringConfig["opportunity"]["buyPressure"]): CategoryScore {
-  const txH1 = sum(p.buysH1, p.sellsH1);
+function scoreBuyPressure(
+  p: NormalizedPair,
+  { o, q, ticketFactor, ticketReason }: Ctx,
+  c: ScoringConfig["opportunity"]["buyPressure"],
+  adj: ScoringConfig["opportunity"]["adjustments"],
+): CategoryScore {
+  const txH1 = o.txH1;
   const items = [
     ratioItem("m5", "Achats vs ventes 5 min", p.buysM5, p.sellsM5, c.ratioM5, c.ratioM5Max, c.confidenceM5, ["txns.m5.buys", "txns.m5.sells"]),
     ratioItem("h1", "Achats vs ventes 1 h", p.buysH1, p.sellsH1, c.ratioH1, c.ratioH1Max, c.confidenceH1, ["txns.h1.buys", "txns.h1.sells"]),
     curveItem("activity", "Nombre de transactions 1 h", txH1, c.activity, c.activityMax, fmtInt, ["txns.h1.buys", "txns.h1.sells"]),
   ];
+  // Many tiny transactions must not be enough for a strong buy-pressure score.
+  for (const it of items) discount(it, ticketFactor, ticketReason);
+  if (q.divergenceH1.triggered || q.divergenceM5.triggered) {
+    const d = q.divergenceH1.triggered ? q.divergenceH1 : q.divergenceM5;
+    for (const it of items) if (it.key !== "activity") discount(it, adj.divergence, `Activité sans réaction du prix (${d.detail})`);
+  }
   return category("buyPressure", c.max, items);
 }
 
@@ -333,8 +361,9 @@ function scoreMarketCap(p: NormalizedPair, c: ScoringConfig["opportunity"]["mark
   return category("marketCap", c.max, [item], cap);
 }
 
-function scoreAge(p: NormalizedPair, ageMin: number | null, c: ScoringConfig["opportunity"]["age"]): CategoryScore {
-  const txH1 = sum(p.buysH1, p.sellsH1);
+function scoreAge({ o, ticketFactor, ticketReason }: Ctx, c: ScoringConfig["opportunity"]["age"]): CategoryScore {
+  const ageMin = o.ageMinutes;
+  const txH1 = o.txH1;
   if (ageMin === null || txH1 === null) {
     const missing = [ageMin === null && "pairCreatedAt", txH1 === null && "txns.h1"].filter(Boolean) as string[];
     return category("age", c.max, [
@@ -343,7 +372,7 @@ function scoreAge(p: NormalizedPair, ageMin: number | null, c: ScoringConfig["op
   }
   const ageF = interpolate(c.ageCurve, ageMin);
   const actF = interpolate(c.activityCurve, txH1);
-  return category("age", c.max, [
+  const item: ScoreItem =
     {
       key: "age",
       label: "Âge × activité réelle",
@@ -354,35 +383,21 @@ function scoreAge(p: NormalizedPair, ageMin: number | null, c: ScoringConfig["op
       note: `Facteur âge ${(ageF * 100).toFixed(0)} % × facteur activité ${(actF * 100).toFixed(0)} %.${
         actF === 0 ? " Sans activité réelle, un token récent ne reçoit aucun point." : ""
       }`,
-    },
-  ]);
+    };
+  discount(item, ticketFactor, ticketReason);
+  return category("age", c.max, [item]);
 }
 
 // ─── Risk ───────────────────────────────────────────────────────────────────
 
-const IMPORTANT_FIELDS: [keyof NormalizedPair, string][] = [
-  ["priceUsd", "priceUsd"],
-  ["marketCap", "marketCap"],
-  ["volumeM5", "volume.m5"],
-  ["volumeH1", "volume.h1"],
-  ["buysM5", "txns.m5.buys"],
-  ["sellsM5", "txns.m5.sells"],
-  ["buysH1", "txns.h1.buys"],
-  ["sellsH1", "txns.h1.sells"],
-  ["priceChangeM5", "priceChange.m5"],
-  ["priceChangeH1", "priceChange.h1"],
-  ["priceChangeH6", "priceChange.h6"],
-  ["pairCreatedAt", "pairCreatedAt"],
-];
-
-function scoreRisk(p: NormalizedPair, ageMin: number | null, c: ScoringConfig["risk"], bondingCurve: boolean) {
+function scoreRisk(p: NormalizedPair, o: Observed, q: QualityResult, c: ScoringConfig["risk"]) {
   const factors: RiskFactor[] = [];
   const add = (key: string, label: string, input: string, points: number) => {
     if (points > 0) factors.push({ key, label, input, points: round1(points) });
   };
 
   if (p.liquidityUsd === null) {
-    if (bondingCurve) add("bondingCurve", "pump.fun bonding curve sans liquidity.usd", `dex ${p.dexId}`, c.bondingCurveNoLiquidity);
+    if (o.bondingCurve) add("bondingCurve", "pump.fun bonding curve sans liquidity.usd", `dex ${p.dexId}`, c.bondingCurveNoLiquidity);
     else add("missingLiquidity", "Liquidité absente", "liquidity.usd absent", c.missingLiquidity);
   } else {
     add("lowLiquidity", "Liquidité faible", fmtUsd(p.liquidityUsd), interpolate(c.lowLiquidity, p.liquidityUsd));
@@ -390,8 +405,7 @@ function scoreRisk(p: NormalizedPair, ageMin: number | null, c: ScoringConfig["r
 
   if (p.marketCap !== null) add("lowMarketCap", "Market cap extrêmement faible", fmtUsd(p.marketCap), interpolate(c.lowMarketCap, p.marketCap));
 
-  const txH1 = sum(p.buysH1, p.sellsH1);
-  if (txH1 !== null) add("fewTxns", "Très peu de transactions", `${fmtInt(txH1)} transactions / 1 h`, interpolate(c.fewTransactions, txH1));
+  if (o.txH1 !== null) add("fewTxns", "Très peu de transactions", `${fmtInt(o.txH1)} transactions / 1 h`, interpolate(c.fewTransactions, o.txH1));
 
   const drops = [p.priceChangeH1, p.priceChangeH6].filter((v): v is number => v !== null);
   if (drops.length) {
@@ -400,9 +414,8 @@ function scoreRisk(p: NormalizedPair, ageMin: number | null, c: ScoringConfig["r
   }
   if (p.priceChangeM5 !== null) add("crashM5", "Chute brutale sur 5 min", fmtPct(p.priceChangeM5), interpolate(c.priceCrashM5, p.priceChangeM5));
 
-  if (p.volumeH1 !== null && p.liquidityUsd !== null && p.liquidityUsd > 0) {
-    const t = p.volumeH1 / p.liquidityUsd;
-    add("turnover", "Volume anormal par rapport à la liquidité", `volume 1 h = ${fmtRatio(t)} la liquidité`, interpolate(c.abnormalTurnover, t));
+  if (o.turnoverH1 !== null) {
+    add("turnover", "Volume anormal par rapport à la liquidité", `volume 1 h = ${fmtRatio(o.turnoverH1)} la liquidité`, interpolate(c.abnormalTurnover, o.turnoverH1));
   }
 
   if (p.priceChangeM5 !== null)
@@ -410,7 +423,20 @@ function scoreRisk(p: NormalizedPair, ageMin: number | null, c: ScoringConfig["r
   if (p.priceChangeH1 !== null)
     add("violentH1", "Mouvement violent sur 1 h", fmtPct(p.priceChangeH1), interpolate(c.violentH1, Math.abs(p.priceChangeH1)));
 
-  if (ageMin !== null) add("veryNew", "Paire très récente", fmtAge(ageMin), interpolate(c.veryNew, ageMin));
+  if (o.ageMinutes !== null) add("veryNew", "Paire très récente", fmtAge(o.ageMinutes), interpolate(c.veryNew, o.ageMinutes));
+
+  if (o.avgTicketH1 !== null && o.txH1 !== null && o.txH1 >= c.smallTicket.minTxns) {
+    add("smallTicket", "Ticket moyen anormalement faible", `${fmtUsd(o.avgTicketH1)} par transaction (1 h)`, interpolate(c.smallTicket.curve, o.avgTicketH1));
+  }
+  if (o.buyShareH1 !== null) {
+    add(
+      "imbalance",
+      "Déséquilibre achats/ventes extrême",
+      `${fmtShare(o.buyShareH1)} d'achats sur ${fmtInt(o.txH1!)} transactions (1 h)`,
+      interpolate(c.buyImbalance, o.buyShareH1) * q.imbalanceWeightH1,
+    );
+  }
+  if (q.divergenceH1.triggered) add("divergence", "Activité sans réaction du prix", q.divergenceH1.detail, c.divergence);
 
   const missingFields = IMPORTANT_FIELDS.filter(([f]) => p[f] === null).map(([, path]) => path);
   if (missingFields.length) {
@@ -430,42 +456,107 @@ function scoreRisk(p: NormalizedPair, ageMin: number | null, c: ScoringConfig["r
 
 // ─── Labels ─────────────────────────────────────────────────────────────────
 
-function pickLabel(opp: number, risk: number, momentum: number, c: ScoringConfig["labels"]): { label: Label | null; reason: string } {
+function pickLabel(
+  opp: number,
+  risk: number,
+  momentum: number,
+  quality: number,
+  confidence: ConfidenceResult["level"],
+  c: ScoringConfig["labels"],
+): { label: Label | null; reason: string } {
   if (risk >= c.highRisk.minRisk) return { label: "HIGH RISK", reason: `Risk ${risk} ≥ ${c.highRisk.minRisk}.` };
-  if (opp >= c.momentum.minOpportunity && momentum >= c.momentum.minMomentum && risk <= c.momentum.maxRisk) {
-    return {
-      label: "MOMENTUM",
-      reason: `Opportunity ${opp} ≥ ${c.momentum.minOpportunity}, Momentum ${momentum} ≥ ${c.momentum.minMomentum}, Risk ${risk} ≤ ${c.momentum.maxRisk}.`,
-    };
+  const m = c.momentum;
+  const blocked: string[] = [];
+  if (opp >= m.minOpportunity && momentum >= m.minMomentum && risk <= m.maxRisk) {
+    if (quality < m.minQuality) blocked.push(`Quality ${quality} < ${m.minQuality}`);
+    if (!m.allowLowConfidence && confidence === "LOW") blocked.push("Confidence LOW");
+    if (!blocked.length) {
+      return {
+        label: "MOMENTUM",
+        reason: `Opportunity ${opp} ≥ ${m.minOpportunity}, Momentum ${momentum} ≥ ${m.minMomentum}, Risk ${risk} ≤ ${m.maxRisk}, Quality ${quality} ≥ ${m.minQuality}, Confidence ${confidence}.`,
+      };
+    }
   }
-  if (opp >= c.watch.minOpportunity && risk <= c.watch.maxRisk) {
-    return { label: "WATCH", reason: `Opportunity ${opp} ≥ ${c.watch.minOpportunity}, Risk ${risk} ≤ ${c.watch.maxRisk}.` };
+  const w = c.watch;
+  const note = blocked.length ? ` (MOMENTUM non attribué : ${blocked.join(", ")})` : "";
+  if (opp >= w.minOpportunity && risk <= w.maxRisk && quality >= w.minQuality) {
+    return { label: "WATCH", reason: `Opportunity ${opp} ≥ ${w.minOpportunity}, Risk ${risk} ≤ ${w.maxRisk}, Quality ${quality} ≥ ${w.minQuality}.${note}` };
   }
-  return { label: null, reason: "Aucun seuil d'étiquette atteint." };
+  const why = opp >= w.minOpportunity && risk <= w.maxRisk && quality < w.minQuality ? ` Quality ${quality} < ${w.minQuality}.` : "";
+  return { label: null, reason: `Aucun seuil d'étiquette atteint.${why}${note}` };
+}
+
+// ─── Signals ────────────────────────────────────────────────────────────────
+
+function buildSignals(categories: Record<CategoryKey, CategoryScore>, risk: RiskFactor[], missing: string[], q: QualityResult): Signals {
+  const positive: string[] = [];
+  const negative: string[] = [];
+  for (const k of CATEGORY_ORDER) {
+    for (const it of categories[k].items) {
+      if (it.missing) continue;
+      const share = it.max > 0 ? it.points / it.max : 0;
+      if (share >= 0.8 && it.max >= 3) positive.push(`${it.label} : ${it.input}`);
+      else if (share <= 0.25 && it.max >= 3) negative.push(`${it.label} : ${it.input} (${it.points.toFixed(1)}/${it.max})`);
+    }
+  }
+  if (q.quality >= 80) positive.push(`Activité cohérente : Quality ${q.quality}/100`);
+  for (const f of risk) negative.push(`${f.label} : ${f.input} (+${f.points} risk)`);
+  if (missing.length) negative.push(`Données absentes : ${missing.join(", ")}`);
+  return { positive, negative, anomalies: q.anomalies };
 }
 
 // ─── entry point ────────────────────────────────────────────────────────────
 
 export function scorePair(p: NormalizedPair, now: number = Date.now(), config: ScoringConfig = SCORING_CONFIG): PairScore {
-  const ageMinutes = p.pairCreatedAt === null ? null : Math.max(0, (now - p.pairCreatedAt) / 60_000);
-  const bondingCurve = p.dexId !== null && config.risk.bondingCurveDexIds.includes(p.dexId);
-  const o = config.opportunity;
+  const observed = observe(p, now, config);
+  const qualityDetail = computeQuality(p, observed, config);
+  const confidence = computeConfidence(p, observed, qualityDetail, config);
+  const oc = config.opportunity;
+
+  const st = oc.adjustments.smallTicket;
+  const ticketApplies = observed.avgTicketH1 !== null && observed.txH1 !== null && observed.txH1 >= st.minTxns;
+  const ctx: Ctx = {
+    o: observed,
+    q: qualityDetail,
+    ticketFactor: ticketApplies ? interpolate(st.curve, observed.avgTicketH1!) : 1,
+    ticketReason: ticketApplies ? `Ticket moyen ${fmtUsd(observed.avgTicketH1!)} / transaction sur 1 h` : "",
+  };
 
   const categories: Record<CategoryKey, CategoryScore> = {
-    momentum: scoreMomentum(p, ageMinutes, o.momentum),
-    volume: scoreVolume(p, ageMinutes, o.volume),
-    buyPressure: scoreBuyPressure(p, o.buyPressure),
-    liquidity: scoreLiquidity(p, o.liquidity, bondingCurve),
-    marketCap: scoreMarketCap(p, o.marketCap),
-    age: scoreAge(p, ageMinutes, o.age),
+    momentum: scoreMomentum(p, ctx, oc.momentum),
+    volume: scoreVolume(p, ctx, oc.volume, oc.adjustments),
+    buyPressure: scoreBuyPressure(p, ctx, oc.buyPressure, oc.adjustments),
+    liquidity: scoreLiquidity(p, oc.liquidity, observed.bondingCurve),
+    marketCap: scoreMarketCap(p, oc.marketCap),
+    age: scoreAge(ctx, oc.age),
   };
 
   const opportunityExact = round1(CATEGORY_ORDER.reduce((s, k) => s + categories[k].points, 0));
   const opportunity = Math.round(Math.min(100, opportunityExact));
-  const risk = scoreRisk(p, ageMinutes, config.risk, bondingCurve);
-  const { label, reason } = pickLabel(opportunity, risk.risk, categories.momentum.points, config.labels);
+  const risk = scoreRisk(p, observed, qualityDetail, config.risk);
+  const { label, reason } = pickLabel(
+    opportunity,
+    risk.risk,
+    categories.momentum.points,
+    qualityDetail.quality,
+    confidence.level,
+    config.labels,
+  );
 
-  return { opportunity, opportunityExact, categories, ...risk, label, labelReason: reason, ageMinutes };
+  return {
+    opportunity,
+    opportunityExact,
+    categories,
+    ...risk,
+    label,
+    labelReason: reason,
+    ageMinutes: observed.ageMinutes,
+    quality: qualityDetail.quality,
+    qualityDetail,
+    confidence,
+    signals: buildSignals(categories, risk.riskFactors, risk.missingFields, qualityDetail),
+    observed,
+  };
 }
 
 export interface ScoredPair {

@@ -4,15 +4,15 @@ import type { RequestLogEntry } from "../api/dexscreener.ts";
 import { METRIC_FIELDS, SOURCE_PATH, fieldCoverage } from "../domain/normalize.ts";
 import { mostLiquidPairPerToken, scanSolana } from "../domain/scanner.ts";
 import type { ScanError, ScanResult } from "../domain/scanner.ts";
-import { LABEL_DISCLAIMER, SCORING_CONFIG } from "../scoring/config.ts";
+import { LABEL_DISCLAIMER } from "../scoring/config.ts";
 import { NO_FILTERS, applyFilters } from "../scoring/filters.ts";
 import type { ScoreFilters } from "../scoring/filters.ts";
-import { CATEGORY_LABEL, scorePairs } from "../scoring/score.ts";
-import type { CategoryKey, Label, ScoredPair } from "../scoring/score.ts";
+import { scorePairs } from "../scoring/score.ts";
+import type { Label, ScoredPair } from "../scoring/score.ts";
 import { FiltersPanel } from "./FiltersPanel.tsx";
-import { LabelBadge } from "./LabelBadge.tsx";
-import { Bar, ScoreDetail, riskLevel } from "./ScoreDetail.tsx";
-import { age, count, percent, shortAddress, usdCompact } from "./format.ts";
+import { ConfidenceBadge, LabelBadge } from "./LabelBadge.tsx";
+import { ScoreDetail, qualityLevel, riskLevel } from "./ScoreDetail.tsx";
+import { age, count, usdCompact } from "./format.ts";
 
 type SortDir = 1 | -1;
 type SortValue = number | string | null;
@@ -27,49 +27,30 @@ interface Column {
   group?: "score" | "raw";
 }
 
-const categoryColumn = (key: CategoryKey, label: string): Column => ({
-  id: `cat-${key}`,
-  label,
-  title: `${CATEGORY_LABEL[key]} : points / ${SCORING_CONFIG.opportunity[key].max}`,
-  numeric: true,
-  group: "score",
-  sortValue: (r) => r.score.categories[key].points,
-  render: (r) => {
-    const c = r.score.categories[key];
-    const anyMissing = c.items.some((i) => i.missing);
-    return (
-      <span className={anyMissing ? "cat-cell partial" : "cat-cell"} title={anyMissing ? "Au moins une donnée absente" : undefined}>
-        {c.points.toFixed(1)}
-        <span className="muted">/{c.max}</span>
-        <Bar value={c.points} max={c.max} />
-      </span>
-    );
-  },
-});
+const CONFIDENCE_RANK = { LOW: 0, MEDIUM: 1, HIGH: 2 } as const;
 
 const COLUMNS: Column[] = [
   {
     id: "token",
     label: "Token",
     sortValue: (r) => r.pair.tokenSymbol,
-    render: ({ pair: p }) => (
+    render: ({ pair: p, score: s }) => (
       <div className="token">
-        <strong>{p.tokenSymbol ?? "—"}</strong>
-        <span className="muted">{p.tokenName ?? "—"}</span>
+        <span className="token-head">
+          <strong>{p.tokenSymbol ?? "—"}</strong>
+          {s.label && <LabelBadge label={s.label} />}
+        </span>
+        <span className="muted">
+          {p.tokenName ?? "—"}
+          {p.dexId ? ` · ${p.dexId}` : ""}
+        </span>
       </div>
     ),
   },
   {
-    id: "label",
-    label: "Étiquette",
-    title: "Étiquette descriptive, jamais une recommandation d'achat",
-    sortValue: (r) => r.score.label,
-    render: (r) => <LabelBadge label={r.score.label} />,
-  },
-  {
     id: "opportunity",
     label: "Opportunity",
-    title: "Opportunity Score /100",
+    title: "Opportunity Score /100 : force du setup observé",
     numeric: true,
     group: "score",
     sortValue: (r) => r.score.opportunity,
@@ -78,65 +59,82 @@ const COLUMNS: Column[] = [
   {
     id: "risk",
     label: "Risk",
-    title: "Risk Score /100",
+    title: "Risk Score /100 : niveau de risque détecté",
     numeric: true,
     group: "score",
     sortValue: (r) => r.score.risk,
     render: (r) => <strong className={`score risk-${riskLevel(r.score.risk)}`}>{r.score.risk}</strong>,
   },
-  categoryColumn("momentum", "Momentum"),
-  categoryColumn("volume", "Volume"),
-  categoryColumn("buyPressure", "Buy Pr."),
-  categoryColumn("liquidity", "Liquidity"),
-  categoryColumn("marketCap", "Mkt Cap"),
-  categoryColumn("age", "Age"),
   {
-    id: "bs5m",
-    label: "B/S 5m",
-    title: "Achats / ventes sur 5 min (txns.m5)",
+    id: "quality",
+    label: "Quality",
+    title: "Quality Score /100 : crédibilité des données et de l'activité",
     numeric: true,
-    sortValue: (r) => ratio(r.pair.buysM5, r.pair.sellsM5),
-    render: ({ pair: p }) => <BuySell buys={p.buysM5} sells={p.sellsM5} />,
+    group: "score",
+    sortValue: (r) => r.score.quality,
+    render: (r) => (
+      <span className="quality-cell">
+        <strong className={`score quality-${qualityLevel(r.score.quality)}`}>{r.score.quality}</strong>
+        {r.score.signals.anomalies.length > 0 && (
+          <span className="anomaly-count" title={r.score.signals.anomalies.map((a) => a.title).join("\n")}>
+            ⚠ {r.score.signals.anomalies.length}
+          </span>
+        )}
+      </span>
+    ),
   },
   {
-    id: "bs1h",
-    label: "B/S 1h",
-    title: "Achats / ventes sur 1 h (txns.h1)",
+    id: "confidence",
+    label: "Confidence",
+    title: "Confiance dans les scores (LOW / MEDIUM / HIGH)",
+    group: "score",
+    sortValue: (r) => CONFIDENCE_RANK[r.score.confidence.level] * 1000 + r.score.confidence.points,
+    render: (r) => <ConfidenceBadge level={r.score.confidence.level} />,
+  },
+  { id: "mcap", label: "MCap", numeric: true, sortValue: (r) => r.pair.marketCap, render: (r) => usdCompact(r.pair.marketCap) },
+  {
+    id: "liq",
+    label: "Liquidity",
+    numeric: true,
+    sortValue: (r) => r.pair.liquidityUsd,
+    render: (r) =>
+      r.pair.liquidityUsd === null ? (
+        <span className="muted" title={r.score.observed.bondingCurve ? "pump.fun bonding curve : liquidity.usd non fourni" : "liquidity.usd absent"}>
+          —
+        </span>
+      ) : (
+        usdCompact(r.pair.liquidityUsd)
+      ),
+  },
+  { id: "vol5m", label: "Vol 5m", numeric: true, sortValue: (r) => r.pair.volumeM5, render: (r) => usdCompact(r.pair.volumeM5) },
+  { id: "vol1h", label: "Vol 1h", numeric: true, sortValue: (r) => r.pair.volumeH1, render: (r) => usdCompact(r.pair.volumeH1) },
+  {
+    id: "bs",
+    label: "Buys/Sells",
+    title: "Achats / ventes sur 5 min et 1 h (tri : part d'achats sur 1 h)",
     numeric: true,
     sortValue: (r) => ratio(r.pair.buysH1, r.pair.sellsH1),
-    render: ({ pair: p }) => <BuySell buys={p.buysH1} sells={p.sellsH1} />,
+    render: ({ pair: p }) => (
+      <span className="bs-stack">
+        <span>
+          <span className="muted">5m </span>
+          <BuySell buys={p.buysM5} sells={p.sellsM5} />
+        </span>
+        <span>
+          <span className="muted">1h </span>
+          <BuySell buys={p.buysH1} sells={p.sellsH1} />
+        </span>
+      </span>
+    ),
   },
-  { id: "mcap", label: "MCap", numeric: true, group: "raw", sortValue: (r) => r.pair.marketCap, render: (r) => usdCompact(r.pair.marketCap) },
-  { id: "liq", label: "Liq.", numeric: true, group: "raw", sortValue: (r) => r.pair.liquidityUsd, render: (r) => usdCompact(r.pair.liquidityUsd) },
-  { id: "vol5m", label: "Vol 5m", numeric: true, group: "raw", sortValue: (r) => r.pair.volumeM5, render: (r) => usdCompact(r.pair.volumeM5) },
-  { id: "vol1h", label: "Vol 1h", numeric: true, group: "raw", sortValue: (r) => r.pair.volumeH1, render: (r) => usdCompact(r.pair.volumeH1) },
-  { id: "ch5m", label: "Δ 5m", numeric: true, group: "raw", sortValue: (r) => r.pair.priceChangeM5, render: (r) => <Change value={r.pair.priceChangeM5} /> },
-  { id: "ch1h", label: "Δ 1h", numeric: true, group: "raw", sortValue: (r) => r.pair.priceChangeH1, render: (r) => <Change value={r.pair.priceChangeH1} /> },
-  { id: "ch6h", label: "Δ 6h", numeric: true, group: "raw", sortValue: (r) => r.pair.priceChangeH6, render: (r) => <Change value={r.pair.priceChangeH6} /> },
   {
     id: "created",
-    label: "Âge",
+    label: "Age",
     numeric: true,
-    group: "raw",
     sortValue: (r) => r.score.ageMinutes,
     render: ({ pair: p }) => (
       <span title={p.pairCreatedAt ? new Date(p.pairCreatedAt).toISOString() : "pairCreatedAt absent"}>{age(p.pairCreatedAt)}</span>
     ),
-  },
-  { id: "dex", label: "DEX", sortValue: (r) => r.pair.dexId, render: (r) => r.pair.dexId ?? "—" },
-  {
-    id: "pair",
-    label: "Pair",
-    sortValue: (r) => r.pair.pairAddress,
-    render: ({ pair: p }) =>
-      p.url ? (
-        <a href={p.url} target="_blank" rel="noreferrer" title={p.pairAddress} onClick={(e) => e.stopPropagation()}>
-          {shortAddress(p.pairAddress)}
-          {p.quoteSymbol ? ` /${p.quoteSymbol}` : ""}
-        </a>
-      ) : (
-        <code title={p.pairAddress}>{shortAddress(p.pairAddress)}</code>
-      ),
   },
 ];
 
@@ -153,11 +151,6 @@ function BuySell({ buys, sells }: { buys: number | null; sells: number | null })
       <span className="up">{count(buys)}</span>/<span className="down">{count(sells)}</span>
     </span>
   );
-}
-
-function Change({ value }: { value: number | null }) {
-  const cls = value === null ? "" : value > 0 ? "up" : value < 0 ? "down" : "";
-  return <span className={cls}>{percent(value)}</span>;
 }
 
 function compare(a: ScoredPair, b: ScoredPair, col: Column, dir: SortDir): number {
@@ -223,7 +216,7 @@ export function App() {
           [p.tokenName, p.tokenSymbol, p.tokenAddress, p.pairAddress, p.dexId].some((v) => v?.toLowerCase().includes(q)),
         )
       : scored;
-    const col = COLUMNS.find((c) => c.id === sort.id) ?? COLUMNS[2];
+    const col = COLUMNS.find((c) => c.id === sort.id) ?? COLUMNS[1];
     return [...applyFilters(textFiltered, filters)].sort((a, b) => compare(a, b, col, sort.dir));
   }, [scored, filter, filters, sort]);
 

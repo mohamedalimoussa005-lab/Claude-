@@ -16,6 +16,7 @@ const FIELDS: Field[] = [
   { key: "minVolumeH1", label: "Volume 1 h min", unit: "$", step: 1000 },
   { key: "minOpportunity", label: "Opportunity min", unit: "/100", step: 5 },
   { key: "maxRisk", label: "Risk max", unit: "/100", step: 5 },
+  { key: "minQuality", label: "Quality min", unit: "/100", step: 5 },
 ];
 
 export function FiltersPanel({ value, onChange }: { value: ScoreFilters; onChange: (f: ScoreFilters) => void }) {

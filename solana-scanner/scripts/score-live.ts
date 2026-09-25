@@ -5,8 +5,8 @@
  *   npm run score:live -- 20      # top 20
  *
  * Read-only: one scan (same pipeline as the UI), then pure scoring. Prints the
- * ranking, the full breakdown of the top pairs, and data anomalies spotted in
- * the raw values. Nothing here predicts a price.
+ * ranking with Opportunity / Risk / Quality / Confidence, the full breakdown of
+ * the top pairs, and every anomaly detected. Nothing here predicts a price.
  */
 
 import { DexScreenerClient } from "../src/api/dexscreener.ts";
@@ -14,7 +14,6 @@ import type { NormalizedPair } from "../src/domain/normalize.ts";
 import { mostLiquidPairPerToken, scanSolana } from "../src/domain/scanner.ts";
 import { LABEL_DISCLAIMER } from "../src/scoring/config.ts";
 import { CATEGORY_ORDER, scorePairs } from "../src/scoring/score.ts";
-import type { ScoredPair } from "../src/scoring/score.ts";
 
 const topN = Number(process.argv[2] ?? 10);
 const client = new DexScreenerClient({ baseUrl: process.env.DEXSCREENER_BASE_URL });
@@ -53,6 +52,8 @@ console.table(
     token: name(p),
     opp: s.opportunity,
     risk: s.risk,
+    quality: s.quality,
+    conf: s.confidence.level,
     label: s.label ?? "",
     mom: s.categories.momentum.points,
     vol: s.categories.volume.points,
@@ -62,18 +63,21 @@ console.table(
     age: s.categories.age.points,
     "b/s 5m": bs(p.buysM5, p.sellsM5),
     "b/s 1h": bs(p.buysH1, p.sellsH1),
-    "Δ5m": pct(p.priceChangeM5),
     "Δ1h": pct(p.priceChangeH1),
     liqUsd: usd(p.liquidityUsd),
-    mcapUsd: usd(p.marketCap),
     pairAge: age(s.ageMinutes),
-    dex: p.dexId ?? "—",
   })),
 );
 
 for (const [i, { pair: p, score: s }] of rows.slice(0, topN).entries()) {
   console.log(`\n#${i + 1} ${name(p)} (${p.tokenName ?? "—"}) — ${p.url ?? p.pairAddress}`);
-  console.log(`   Pourquoi ${s.opportunity}/100 ? (somme exacte ${s.opportunityExact}) · Risk ${s.risk}/100 · ${s.label ?? "sans étiquette"} — ${s.labelReason}`);
+  console.log(
+    `   Opportunity ${s.opportunity}/100 · Risk ${s.risk}/100 · Quality ${s.quality}/100 · Confidence ${s.confidence.level}` +
+      `${s.confidence.caps.length ? ` (${s.confidence.caps.join(", ")})` : ""} · ${s.label ?? "sans étiquette"} — ${s.labelReason}`,
+  );
+  console.log(`   + ${s.signals.positive.join("\n   + ") || "aucun signal positif marqué"}`);
+  console.log(`   − ${s.signals.negative.join("\n   − ") || "aucun signal négatif marqué"}`);
+  console.log(`   ⚠ ${s.signals.anomalies.map((a) => `${a.title} (${a.detail})`).join("\n   ⚠ ") || "aucune anomalie"}`);
   for (const k of CATEGORY_ORDER) {
     const c = s.categories[k];
     console.log(`   ${c.label.padEnd(13)} ${String(c.points).padStart(5)} / ${c.max}${c.cap ? `   ⚠ ${c.cap.reason}` : ""}`);
@@ -84,40 +88,15 @@ for (const [i, { pair: p, score: s }] of rows.slice(0, topN).entries()) {
   console.log(`   Risk factors: ${s.riskFactors.length ? s.riskFactors.map((f) => `${f.label} +${f.points} (${f.input})`).join(" · ") : "aucun"}`);
 }
 
-// ─── anomalies in the raw data ─────────────────────────────────────────────
+// ─── anomalies ──────────────────────────────────────────────────────────────
 
-function anomalies({ pair: p, score: s }: ScoredPair): string[] {
-  const out: string[] = [];
-  if (p.liquidityUsd === null) out.push(`liquidity.usd absent (dex ${p.dexId})`);
-  if (p.liquidityUsd !== null && p.marketCap !== null && p.liquidityUsd > p.marketCap)
-    out.push(`liquidité ${usd(p.liquidityUsd)} > market cap ${usd(p.marketCap)}`);
-  if (p.liquidityUsd && p.volumeH1 !== null && p.volumeH1 / p.liquidityUsd > 10)
-    out.push(`volume 1 h = ${(p.volumeH1 / p.liquidityUsd).toFixed(0)}× la liquidité`);
-  if (p.priceChangeH1 !== null && Math.abs(p.priceChangeH1) >= 90) out.push(`Δ1h ${pct(p.priceChangeH1)}`);
-  if (p.priceChangeM5 !== null && Math.abs(p.priceChangeM5) >= 30) out.push(`Δ5m ${pct(p.priceChangeM5)}`);
-  if (p.priceChangeM5 === null && p.volumeM5 === 0) out.push("priceChange.m5 absent et volume 5 min = 0 (aucun trade récent)");
-  else if (p.priceChangeM5 === null) out.push("priceChange.m5 absent");
-  if (p.priceChangeH1 === null) out.push("priceChange.h1 absent");
-  const txM5 = p.buysM5 !== null && p.sellsM5 !== null ? p.buysM5 + p.sellsM5 : null;
-  if (txM5 !== null && txM5 >= 20 && p.buysM5! / txM5 >= 0.9) out.push(`5 min : ${p.buysM5} achats / ${p.sellsM5} ventes (≥ 90 % achats)`);
-  if (txM5 !== null && txM5 >= 20 && p.sellsM5! / txM5 >= 0.85) out.push(`5 min : ${p.sellsM5} ventes / ${p.buysM5} achats (≥ 85 % ventes)`);
-  if (p.volumeH1 && p.buysH1 !== null && p.sellsH1 !== null && p.buysH1 + p.sellsH1 > 0) {
-    const avg = p.volumeH1 / (p.buysH1 + p.sellsH1);
-    if (avg < 5) out.push(`ticket moyen 1 h ${usd(avg)} (possibles micro-transactions de bots)`);
-  }
-  if (s.ageMinutes !== null && s.ageMinutes < 60 && p.volumeH1 !== null && p.volumeH1 === p.volumeH24)
-    out.push(`paire de ${age(s.ageMinutes)} : volume 1 h = 6 h = 24 h (fenêtres identiques)`);
-  if (p.marketCap !== null && p.fdv !== null && Math.abs(p.marketCap - p.fdv) / p.fdv > 0.05)
-    out.push(`market cap ${usd(p.marketCap)} ≠ FDV ${usd(p.fdv)}`);
-  return out;
-}
-
-console.log("\n─── Anomalies observées dans les données brutes ───");
+console.log("\n─── Anomalies détectées (tous les tokens) ───");
 let any = false;
-for (const r of rows) {
-  const a = anomalies(r);
-  if (!a.length) continue;
+for (const { pair: p, score: s } of rows) {
+  if (!s.signals.anomalies.length) continue;
   any = true;
-  console.log(`  ${name(r.pair).padEnd(12)} opp ${String(r.score.opportunity).padStart(3)} risk ${String(r.score.risk).padStart(3)} : ${a.join(" · ")}`);
+  console.log(
+    `  ${name(p).padEnd(12)} opp ${String(s.opportunity).padStart(3)} risk ${String(s.risk).padStart(3)} quality ${String(s.quality).padStart(3)} ${s.confidence.level.padEnd(6)} : ${s.signals.anomalies.map((a) => a.title).join(" · ")}`,
+  );
 }
 if (!any) console.log("  aucune");

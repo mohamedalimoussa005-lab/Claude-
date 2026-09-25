@@ -4,7 +4,8 @@ Scanner **en lecture seule** des paires Solana, alimenté par l'API publique
 officielle de DEX Screener (<https://docs.dexscreener.com/api/reference>).
 
 Pas de trading, pas d'achat, pas de wallet, pas d'IA. L'étape 1 récupère les données réelles ;
-l'étape 2 les note avec deux scores **descriptifs** (voir [Scoring](#scoring)). Aucun score ne prédit le prix.
+l'étape 2 les note avec des scores **descriptifs** (voir [Scoring](#scoring)) : Opportunity, Risk, Quality et Confidence.
+Aucun score ne prédit le prix.
 
 ## Lancer
 
@@ -89,6 +90,38 @@ très peu de transactions · chute de prix extrême (pire de Δ1h / Δ6h) · chu
 par rapport à la liquidité · mouvements violents (5 min, 1 h) · paire très récente · données importantes manquantes
 (+3 par champ, max 15).
 
+Si l'activité semble peu fiable, les points d'Opportunity concernés sont réduits (config `opportunity.adjustments`) :
+- ticket moyen 1 h (volume / transactions) très faible : ratios achats/ventes, nombre de transactions et facteur d'activité de l'âge × 0,2 à 1 ;
+- volume 1 h / liquidité élevé : points de volume 5 min et 1 h × 0,2 à 1 ;
+- activité sans réaction du prix : ratios achats/ventes × 0,5.
+
+Les ratios achats/ventes extrêmes (> 80 % d'achats) rapportent **moins** de points qu'un ratio sain (65–80 %).
+
+### Quality Score (0–100) : crédibilité des données et de l'activité
+
+`src/scoring/quality.ts`. Quality = 100 − déductions (config `quality`) :
+
+| Signal | Anomalie affichée |
+|---|---|
+| Ticket moyen faible (volume / transactions, fenêtre avec ≥ 50 txns) | `Unusually small average transaction size`, ou `Possible artificial activity` si < $3 avec ≥ 300 txns |
+| Part d'achats > 80 %, pondérée par le nombre de transactions | `Extreme buy/sell imbalance` |
+| ≥ 1000 txns / 1 h (ou 150 / 5 min), achats dominants, prix quasi plat | `High transaction activity with limited price response` |
+| Volume 1 h / liquidité (4 pts à 5×, 25 à 30×, 40 à 200×) | `Extreme volume/liquidity ratio` |
+| Hausse ou chute extrême (+1000 % ou −95 % : −30), mouvement violent 5 min | `Extreme price movement` |
+| Liquidité > market cap | `Liquidity above market cap` |
+| Fenêtres incohérentes (ex. volume 5 min > volume 1 h) | `Inconsistent time windows` |
+| Peu de transactions, historique très court, liquidité absente, champs manquants | (limites des données, pas des anomalies) |
+
+Une anomalie signale un motif inhabituel ; le moteur ne conclut jamais qu'il s'agit d'un bot.
+Les nouveaux facteurs de Risk associés : ticket moyen très faible, déséquilibre achats/ventes extrême, activité sans réaction du prix.
+
+### Confidence : LOW / MEDIUM / HIGH
+
+Points (0–100) : données disponibles (25), âge (20), transactions 1 h (20), liquidité (15), cohérence des fenêtres (20),
+moins 6 par anomalie (max 30). HIGH ≥ 70, MEDIUM ≥ 45. Plafonds : moins de 15 min ou Quality < 40 → LOW ;
+moins de 60 min, âge inconnu, liquidité absente ou Quality < 60 → au plus MEDIUM.
+Un token récent peut donc avoir un Opportunity élevé et une Confidence LOW.
+
 ### Données absentes
 
 Une donnée absente n'est **jamais** remplacée par 0 : l'item qui en dépend ne reçoit aucun point, il est marqué
@@ -97,12 +130,14 @@ Les filtres excluent une paire dont la valeur testée est absente.
 
 ### Étiquettes descriptives
 
-`HIGH RISK` (Risk ≥ 50), `MOMENTUM` (Opportunity ≥ 60, Momentum ≥ 15/25, Risk ≤ 40), `WATCH` (Opportunity ≥ 45,
-Risk ≤ 49). Elles décrivent l'état observé ; **ce ne sont pas des recommandations d'achat**.
+`HIGH RISK` (Risk ≥ 50), `MOMENTUM` (Opportunity ≥ 60, Momentum ≥ 15/25, Risk ≤ 40, Quality ≥ 60, Confidence ≠ LOW),
+`WATCH` (Opportunity ≥ 45, Risk ≤ 49, Quality ≥ 40). Comme Quality et Confidence, elles décrivent l'état observé ;
+**ce ne sont pas des recommandations d'achat**.
 
 ### Interface
 
-Colonnes Opportunity, Risk, points par catégorie, achats/ventes 5 min et 1 h ; tri par défaut sur l'Opportunity Score.
-Filtres : âge max, market cap min/max, liquidité min, volume 1 h min, Opportunity min, Risk max.
-Un clic sur une ligne ouvre « Pourquoi ce token a obtenu X/100 ? » : points de chaque catégorie et de chaque item,
-valeur mesurée, plafonds appliqués, facteurs de risque et champs absents.
+Colonnes : Token (+ étiquette), Opportunity, Risk, Quality (+ nombre d'anomalies), Confidence, MCap, Liquidity,
+Vol 5m, Vol 1h, Buys/Sells (5 min et 1 h), Age. Tri par défaut sur l'Opportunity Score.
+Filtres : âge max, market cap min/max, liquidité min, volume 1 h min, Opportunity min, Risk max, Quality min.
+Un clic sur une ligne ouvre « Why this score? » : les quatre mesures, Positive signals, Negative signals, Anomalies,
+puis le détail des points (Opportunity par catégorie, déductions de Quality, calcul de Confidence, facteurs de Risk).

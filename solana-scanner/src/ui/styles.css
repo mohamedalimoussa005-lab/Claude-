@@ -485,3 +485,85 @@ table.breakdown tr.total td {
     width: 100px;
   }
 }
+
+/* ─── Quality / Confidence ────────────────────────────────────────────── */
+
+.token-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.quality-high {
+  color: var(--up);
+}
+
+.quality-mid {
+  color: #d29922;
+}
+
+.quality-low {
+  color: var(--down);
+}
+
+.quality-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.anomaly-count {
+  font-size: 11px;
+  color: var(--warn-border);
+}
+
+.badge.conf-high {
+  color: #56d364;
+  border-color: #238636;
+}
+
+.badge.conf-medium {
+  color: #e3b341;
+  border-color: #9e6a03;
+}
+
+.badge.conf-low {
+  color: #8b949e;
+  border-color: #484f58;
+}
+
+.bs-stack {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: 12px;
+}
+
+ul.signals {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+ul.signals li {
+  margin: 3px 0;
+}
+
+ul.signals.pos li::marker {
+  color: var(--up);
+}
+
+ul.signals.neg li::marker {
+  color: var(--down);
+}
+
+ul.signals.anomalies li::marker {
+  color: var(--warn-border);
+}
+
+.warn-text {
+  color: var(--warn-border);
+}
+
+.detail details {
+  margin-top: 12px;
+}

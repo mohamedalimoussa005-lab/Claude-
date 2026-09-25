@@ -188,7 +188,7 @@ test("token down −95 %: near-zero momentum, heavy crash risk", () => {
   const s = score({ priceChangeM5: -20, priceChangeH1: -95, priceChangeH6: -95 });
   assertWellFormed(s);
   assert.ok(s.categories.momentum.points <= 3, `momentum ${s.categories.momentum.points}`);
-  assert.equal(factor(s, "crash"), 40);
+  assert.equal(factor(s, "crash"), SCORING_CONFIG.risk.priceCrash[0][1]);
   assert.equal(s.label, "HIGH RISK");
   assert.ok(factor(s, "crashM5") > 0);
   assert.notEqual(s.label, "MOMENTUM");
@@ -230,7 +230,7 @@ test("huge volume on tiny liquidity: turnover gets no opportunity points and hig
   const s = score({ liquidityUsd: 3_000, marketCap: 6_000, volumeH1: 2_000_000, volumeM5: 200_000 });
   assertWellFormed(s);
   assert.equal(item(s, "volume", "turnover").points, 0);
-  assert.equal(factor(s, "turnover"), 18);
+  assert.equal(factor(s, "turnover"), 30); // 667× → top of the abnormalTurnover curve
   assert.ok(factor(s, "lowLiquidity") >= 18);
   assert.ok(s.categories.marketCap.points <= SCORING_CONFIG.opportunity.marketCap.illiquid.cap);
   assert.ok(s.risk >= SCORING_CONFIG.labels.highRisk.minRisk);

@@ -1,4 +1,4 @@
-import type { Label } from "../scoring/score.ts";
+import type { ConfidenceLevel, Label } from "../scoring/score.ts";
 
 const TITLE: Record<Label, string> = {
   WATCH: "Setup correct à observer. Étiquette descriptive, pas une recommandation d'achat.",
@@ -12,6 +12,20 @@ export function LabelBadge({ label }: { label: Label | null }) {
   return (
     <span className={`badge ${cls}`} title={TITLE[label]}>
       {label}
+    </span>
+  );
+}
+
+const CONFIDENCE_TITLE: Record<ConfidenceLevel, string> = {
+  HIGH: "Données complètes et cohérentes, historique et activité suffisants. Pas une recommandation d'achat.",
+  MEDIUM: "Données partielles, historique court ou anomalies : scores à interpréter avec prudence.",
+  LOW: "Peu de données fiables : les scores décrivent un signal fragile.",
+};
+
+export function ConfidenceBadge({ level }: { level: ConfidenceLevel }) {
+  return (
+    <span className={`badge conf-${level.toLowerCase()}`} title={CONFIDENCE_TITLE[level]}>
+      {level}
     </span>
   );
 }

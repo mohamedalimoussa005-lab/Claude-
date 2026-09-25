@@ -17,6 +17,7 @@ export interface ScoreFilters {
   minVolumeH1: number | null;
   minOpportunity: number | null;
   maxRisk: number | null;
+  minQuality: number | null;
 }
 
 export const NO_FILTERS: ScoreFilters = {
@@ -27,6 +28,7 @@ export const NO_FILTERS: ScoreFilters = {
   minVolumeH1: null,
   minOpportunity: null,
   maxRisk: null,
+  minQuality: null,
 };
 
 const atLeast = (v: number | null, min: number | null) => min === null || (v !== null && v >= min);
@@ -40,7 +42,8 @@ export function matchesFilters({ pair, score }: ScoredPair, f: ScoreFilters): bo
     atLeast(pair.liquidityUsd, f.minLiquidity) &&
     atLeast(pair.volumeH1, f.minVolumeH1) &&
     atLeast(score.opportunity, f.minOpportunity) &&
-    atMost(score.risk, f.maxRisk)
+    atMost(score.risk, f.maxRisk) &&
+    atLeast(score.quality, f.minQuality)
   );
 }
 
