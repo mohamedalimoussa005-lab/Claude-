@@ -2,25 +2,57 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DexScreenerClient, RATE_LIMITS } from "../api/dexscreener.ts";
 import type { RequestLogEntry } from "../api/dexscreener.ts";
 import { METRIC_FIELDS, SOURCE_PATH, fieldCoverage } from "../domain/normalize.ts";
-import type { NormalizedPair } from "../domain/normalize.ts";
 import { mostLiquidPairPerToken, scanSolana } from "../domain/scanner.ts";
 import type { ScanError, ScanResult } from "../domain/scanner.ts";
-import { age, count, percent, shortAddress, usdCompact, usdPrice } from "./format.ts";
+import { LABEL_DISCLAIMER, SCORING_CONFIG } from "../scoring/config.ts";
+import { NO_FILTERS, applyFilters } from "../scoring/filters.ts";
+import type { ScoreFilters } from "../scoring/filters.ts";
+import { CATEGORY_LABEL, scorePairs } from "../scoring/score.ts";
+import type { CategoryKey, Label, ScoredPair } from "../scoring/score.ts";
+import { FiltersPanel } from "./FiltersPanel.tsx";
+import { LabelBadge } from "./LabelBadge.tsx";
+import { Bar, ScoreDetail, riskLevel } from "./ScoreDetail.tsx";
+import { age, count, percent, shortAddress, usdCompact } from "./format.ts";
 
-type SortKey = keyof NormalizedPair;
+type SortDir = 1 | -1;
+type SortValue = number | string | null;
 
 interface Column {
-  key: SortKey;
+  id: string;
   label: string;
-  render: (p: NormalizedPair) => React.ReactNode;
+  title?: string;
+  sortValue: (r: ScoredPair) => SortValue;
+  render: (r: ScoredPair) => React.ReactNode;
   numeric?: boolean;
+  group?: "score" | "raw";
 }
+
+const categoryColumn = (key: CategoryKey, label: string): Column => ({
+  id: `cat-${key}`,
+  label,
+  title: `${CATEGORY_LABEL[key]} : points / ${SCORING_CONFIG.opportunity[key].max}`,
+  numeric: true,
+  group: "score",
+  sortValue: (r) => r.score.categories[key].points,
+  render: (r) => {
+    const c = r.score.categories[key];
+    const anyMissing = c.items.some((i) => i.missing);
+    return (
+      <span className={anyMissing ? "cat-cell partial" : "cat-cell"} title={anyMissing ? "Au moins une donnée absente" : undefined}>
+        {c.points.toFixed(1)}
+        <span className="muted">/{c.max}</span>
+        <Bar value={c.points} max={c.max} />
+      </span>
+    );
+  },
+});
 
 const COLUMNS: Column[] = [
   {
-    key: "tokenSymbol",
+    id: "token",
     label: "Token",
-    render: (p) => (
+    sortValue: (r) => r.pair.tokenSymbol,
+    render: ({ pair: p }) => (
       <div className="token">
         <strong>{p.tokenSymbol ?? "—"}</strong>
         <span className="muted">{p.tokenName ?? "—"}</span>
@@ -28,56 +60,98 @@ const COLUMNS: Column[] = [
     ),
   },
   {
-    key: "tokenAddress",
-    label: "Token address",
-    render: (p) => <Address value={p.tokenAddress} />,
+    id: "label",
+    label: "Étiquette",
+    title: "Étiquette descriptive, jamais une recommandation d'achat",
+    sortValue: (r) => r.score.label,
+    render: (r) => <LabelBadge label={r.score.label} />,
   },
   {
-    key: "pairAddress",
+    id: "opportunity",
+    label: "Opportunity",
+    title: "Opportunity Score /100",
+    numeric: true,
+    group: "score",
+    sortValue: (r) => r.score.opportunity,
+    render: (r) => <strong className="score">{r.score.opportunity}</strong>,
+  },
+  {
+    id: "risk",
+    label: "Risk",
+    title: "Risk Score /100",
+    numeric: true,
+    group: "score",
+    sortValue: (r) => r.score.risk,
+    render: (r) => <strong className={`score risk-${riskLevel(r.score.risk)}`}>{r.score.risk}</strong>,
+  },
+  categoryColumn("momentum", "Momentum"),
+  categoryColumn("volume", "Volume"),
+  categoryColumn("buyPressure", "Buy Pr."),
+  categoryColumn("liquidity", "Liquidity"),
+  categoryColumn("marketCap", "Mkt Cap"),
+  categoryColumn("age", "Age"),
+  {
+    id: "bs5m",
+    label: "B/S 5m",
+    title: "Achats / ventes sur 5 min (txns.m5)",
+    numeric: true,
+    sortValue: (r) => ratio(r.pair.buysM5, r.pair.sellsM5),
+    render: ({ pair: p }) => <BuySell buys={p.buysM5} sells={p.sellsM5} />,
+  },
+  {
+    id: "bs1h",
+    label: "B/S 1h",
+    title: "Achats / ventes sur 1 h (txns.h1)",
+    numeric: true,
+    sortValue: (r) => ratio(r.pair.buysH1, r.pair.sellsH1),
+    render: ({ pair: p }) => <BuySell buys={p.buysH1} sells={p.sellsH1} />,
+  },
+  { id: "mcap", label: "MCap", numeric: true, group: "raw", sortValue: (r) => r.pair.marketCap, render: (r) => usdCompact(r.pair.marketCap) },
+  { id: "liq", label: "Liq.", numeric: true, group: "raw", sortValue: (r) => r.pair.liquidityUsd, render: (r) => usdCompact(r.pair.liquidityUsd) },
+  { id: "vol5m", label: "Vol 5m", numeric: true, group: "raw", sortValue: (r) => r.pair.volumeM5, render: (r) => usdCompact(r.pair.volumeM5) },
+  { id: "vol1h", label: "Vol 1h", numeric: true, group: "raw", sortValue: (r) => r.pair.volumeH1, render: (r) => usdCompact(r.pair.volumeH1) },
+  { id: "ch5m", label: "Δ 5m", numeric: true, group: "raw", sortValue: (r) => r.pair.priceChangeM5, render: (r) => <Change value={r.pair.priceChangeM5} /> },
+  { id: "ch1h", label: "Δ 1h", numeric: true, group: "raw", sortValue: (r) => r.pair.priceChangeH1, render: (r) => <Change value={r.pair.priceChangeH1} /> },
+  { id: "ch6h", label: "Δ 6h", numeric: true, group: "raw", sortValue: (r) => r.pair.priceChangeH6, render: (r) => <Change value={r.pair.priceChangeH6} /> },
+  {
+    id: "created",
+    label: "Âge",
+    numeric: true,
+    group: "raw",
+    sortValue: (r) => r.score.ageMinutes,
+    render: ({ pair: p }) => (
+      <span title={p.pairCreatedAt ? new Date(p.pairCreatedAt).toISOString() : "pairCreatedAt absent"}>{age(p.pairCreatedAt)}</span>
+    ),
+  },
+  { id: "dex", label: "DEX", sortValue: (r) => r.pair.dexId, render: (r) => r.pair.dexId ?? "—" },
+  {
+    id: "pair",
     label: "Pair",
-    render: (p) =>
+    sortValue: (r) => r.pair.pairAddress,
+    render: ({ pair: p }) =>
       p.url ? (
-        <a href={p.url} target="_blank" rel="noreferrer" title={p.pairAddress}>
+        <a href={p.url} target="_blank" rel="noreferrer" title={p.pairAddress} onClick={(e) => e.stopPropagation()}>
           {shortAddress(p.pairAddress)}
           {p.quoteSymbol ? ` /${p.quoteSymbol}` : ""}
         </a>
       ) : (
-        <Address value={p.pairAddress} />
+        <code title={p.pairAddress}>{shortAddress(p.pairAddress)}</code>
       ),
-  },
-  { key: "dexId", label: "DEX", render: (p) => p.dexId ?? "—" },
-  { key: "priceUsd", label: "Price", numeric: true, render: (p) => usdPrice(p.priceUsd) },
-  { key: "marketCap", label: "MCap", numeric: true, render: (p) => usdCompact(p.marketCap) },
-  { key: "fdv", label: "FDV", numeric: true, render: (p) => usdCompact(p.fdv) },
-  { key: "liquidityUsd", label: "Liquidity", numeric: true, render: (p) => usdCompact(p.liquidityUsd) },
-  { key: "volumeM5", label: "Vol 5m", numeric: true, render: (p) => usdCompact(p.volumeM5) },
-  { key: "volumeH1", label: "Vol 1h", numeric: true, render: (p) => usdCompact(p.volumeH1) },
-  { key: "volumeH6", label: "Vol 6h", numeric: true, render: (p) => usdCompact(p.volumeH6) },
-  { key: "volumeH24", label: "Vol 24h", numeric: true, render: (p) => usdCompact(p.volumeH24) },
-  { key: "buysM5", label: "Buys 5m", numeric: true, render: (p) => count(p.buysM5) },
-  { key: "sellsM5", label: "Sells 5m", numeric: true, render: (p) => count(p.sellsM5) },
-  { key: "buysH1", label: "Buys 1h", numeric: true, render: (p) => count(p.buysH1) },
-  { key: "sellsH1", label: "Sells 1h", numeric: true, render: (p) => count(p.sellsH1) },
-  { key: "priceChangeM5", label: "Δ 5m", numeric: true, render: (p) => <Change value={p.priceChangeM5} /> },
-  { key: "priceChangeH1", label: "Δ 1h", numeric: true, render: (p) => <Change value={p.priceChangeH1} /> },
-  { key: "priceChangeH6", label: "Δ 6h", numeric: true, render: (p) => <Change value={p.priceChangeH6} /> },
-  {
-    key: "pairCreatedAt",
-    label: "Age",
-    numeric: true,
-    render: (p) => (
-      <span title={p.pairCreatedAt ? new Date(p.pairCreatedAt).toISOString() : "pairCreatedAt absent"}>
-        {age(p.pairCreatedAt)}
-      </span>
-    ),
   },
 ];
 
-function Address({ value }: { value: string }) {
+function ratio(buys: number | null, sells: number | null): number | null {
+  if (buys === null || sells === null || buys + sells === 0) return null;
+  return buys / (buys + sells);
+}
+
+function BuySell({ buys, sells }: { buys: number | null; sells: number | null }) {
+  if (buys === null || sells === null) return <span className="muted">—</span>;
+  const r = ratio(buys, sells);
   return (
-    <code title={value} className="addr" onClick={() => void navigator.clipboard?.writeText(value)}>
-      {shortAddress(value)}
-    </code>
+    <span className="bs" title={r === null ? "aucune transaction" : `${(r * 100).toFixed(0)} % achats`}>
+      <span className="up">{count(buys)}</span>/<span className="down">{count(sells)}</span>
+    </span>
   );
 }
 
@@ -86,9 +160,9 @@ function Change({ value }: { value: number | null }) {
   return <span className={cls}>{percent(value)}</span>;
 }
 
-function compare(a: NormalizedPair, b: NormalizedPair, key: SortKey, dir: 1 | -1): number {
-  const va = a[key];
-  const vb = b[key];
+function compare(a: ScoredPair, b: ScoredPair, col: Column, dir: SortDir): number {
+  const va = col.sortValue(a);
+  const vb = col.sortValue(b);
   // Missing values always sink to the bottom, whatever the direction.
   if (va === null && vb === null) return 0;
   if (va === null) return 1;
@@ -104,7 +178,9 @@ export function App() {
   const [log, setLog] = useState<RequestLogEntry[]>([]);
   const [onePerToken, setOnePerToken] = useState(true);
   const [filter, setFilter] = useState("");
-  const [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: "volumeH1", dir: -1 });
+  const [sort, setSort] = useState<{ id: string; dir: SortDir }>({ id: "opportunity", dir: -1 });
+  const [filters, setFilters] = useState<ScoreFilters>(NO_FILTERS);
+  const [selected, setSelected] = useState<string | null>(null);
 
   const client = useMemo(
     () =>
@@ -134,24 +210,34 @@ export function App() {
     void refresh();
   }, [refresh]);
 
-  const rows = useMemo(() => {
+  const scored = useMemo(() => {
     if (!result) return [];
     const base = onePerToken ? mostLiquidPairPerToken(result.pairs) : result.pairs;
+    return scorePairs(base, result.fetchedAt);
+  }, [result, onePerToken]);
+
+  const rows = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    const filtered = q
-      ? base.filter((p) =>
-          [p.tokenName, p.tokenSymbol, p.tokenAddress, p.pairAddress, p.dexId].some((v) =>
-            v?.toLowerCase().includes(q),
-          ),
+    const textFiltered = q
+      ? scored.filter(({ pair: p }) =>
+          [p.tokenName, p.tokenSymbol, p.tokenAddress, p.pairAddress, p.dexId].some((v) => v?.toLowerCase().includes(q)),
         )
-      : base;
-    return [...filtered].sort((a, b) => compare(a, b, sort.key, sort.dir));
-  }, [result, onePerToken, filter, sort]);
+      : scored;
+    const col = COLUMNS.find((c) => c.id === sort.id) ?? COLUMNS[2];
+    return [...applyFilters(textFiltered, filters)].sort((a, b) => compare(a, b, col, sort.dir));
+  }, [scored, filter, filters, sort]);
+
+  const labelCounts = useMemo(() => {
+    const out = { WATCH: 0, MOMENTUM: 0, "HIGH RISK": 0 } as Record<Label, number>;
+    for (const r of rows) if (r.score.label) out[r.score.label]++;
+    return out;
+  }, [rows]);
+
+  const selectedRow = selected ? scored.find((r) => r.pair.pairAddress === selected) ?? null : null;
 
   const coverage = useMemo(() => (result ? fieldCoverage(result.pairs) : null), [result]);
 
-  const onSort = (key: SortKey) =>
-    setSort((s) => (s.key === key ? { key, dir: s.dir === 1 ? -1 : 1 } : { key, dir: -1 }));
+  const onSort = (id: string) => setSort((s) => (s.id === id ? { id, dir: s.dir === 1 ? -1 : 1 } : { id, dir: -1 }));
 
   const allFailed = result !== null && result.pairs.length === 0 && result.errors.length > 0;
 
@@ -161,7 +247,7 @@ export function App() {
         <div>
           <h1>Solana Scanner</h1>
           <p className="muted">
-            Données réelles DEX Screener · lecture seule · aucun trading, aucun wallet, aucun scoring
+            Données réelles DEX Screener · lecture seule · aucun trading, aucun wallet · scores descriptifs, pas de prédiction
           </p>
         </div>
         <button onClick={() => void refresh()} disabled={loading}>
@@ -207,32 +293,48 @@ export function App() {
           <input type="checkbox" checked={onePerToken} onChange={(e) => setOnePerToken(e.target.checked)} />
           1 paire par token (la plus liquide)
         </label>
-        <span className="muted">{rows.length} lignes</span>
+        <span className="muted">
+          {rows.length} / {scored.length} lignes
+        </span>
+        <span className="label-counts">
+          <LabelBadge label="MOMENTUM" /> {labelCounts.MOMENTUM} <LabelBadge label="WATCH" /> {labelCounts.WATCH}{" "}
+          <LabelBadge label="HIGH RISK" /> {labelCounts["HIGH RISK"]}
+        </span>
       </section>
 
+      <FiltersPanel value={filters} onChange={setFilters} />
+
+      <p className="disclaimer">
+        {LABEL_DISCLAIMER} Cliquez sur une ligne pour voir le détail du score.
+      </p>
+
       <div className="table-wrap">
-        <table>
+        <table className="scores">
           <thead>
             <tr>
               {COLUMNS.map((c) => (
                 <th
-                  key={c.key}
-                  className={c.numeric ? "num" : undefined}
-                  onClick={() => onSort(c.key)}
-                  title={`Source : ${SOURCE_PATH[c.key]}`}
+                  key={c.id}
+                  className={[c.numeric ? "num" : "", c.group ? `g-${c.group}` : ""].join(" ").trim() || undefined}
+                  onClick={() => onSort(c.id)}
+                  title={c.title}
                 >
                   {c.label}
-                  {sort.key === c.key ? (sort.dir === -1 ? " ▼" : " ▲") : ""}
+                  {sort.id === c.id ? (sort.dir === -1 ? " ▼" : " ▲") : ""}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {rows.map((p) => (
-              <tr key={p.pairAddress}>
+            {rows.map((r) => (
+              <tr
+                key={r.pair.pairAddress}
+                className={selected === r.pair.pairAddress ? "clickable selected" : "clickable"}
+                onClick={() => setSelected(r.pair.pairAddress)}
+              >
                 {COLUMNS.map((c) => (
-                  <td key={c.key} className={c.numeric ? "num" : undefined}>
-                    {c.render(p)}
+                  <td key={c.id} className={c.numeric ? "num" : undefined}>
+                    {c.render(r)}
                   </td>
                 ))}
               </tr>
@@ -240,13 +342,17 @@ export function App() {
             {rows.length === 0 && (
               <tr>
                 <td colSpan={COLUMNS.length} className="empty">
-                  {loading ? "Chargement des données DEX Screener…" : "Aucune paire à afficher."}
+                  {loading ? "Chargement des données DEX Screener…" : "Aucune paire ne correspond aux filtres."}
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
+
+      {selectedRow && result && (
+        <ScoreDetail row={selectedRow} fetchedAt={result.fetchedAt} onClose={() => setSelected(null)} />
+      )}
 
       {result && coverage && (
         <details>

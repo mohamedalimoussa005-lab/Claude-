@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --no-warnings --test test/*.test.ts",
-    "test:live": "node --experimental-strip-types --no-warnings scripts/live-test.ts"
+    "test:live": "node --experimental-strip-types --no-warnings scripts/live-test.ts",
+    "score:live": "node --experimental-strip-types --no-warnings scripts/score-live.ts"
   },
   "dependencies": {
     "react": "^18.3.1",

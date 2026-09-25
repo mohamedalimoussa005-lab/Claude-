@@ -1,10 +1,10 @@
-# Solana Scanner — étape 1 : récupération des données DEX Screener
+# Solana Scanner — données DEX Screener + scoring
 
 Scanner **en lecture seule** des paires Solana, alimenté par l'API publique
 officielle de DEX Screener (<https://docs.dexscreener.com/api/reference>).
 
-Pas de trading, pas d'achat, pas de wallet, pas d'IA, pas de scoring : cette
-étape sert uniquement à vérifier que les données réelles sont bien récupérées.
+Pas de trading, pas d'achat, pas de wallet, pas d'IA. L'étape 1 récupère les données réelles ;
+l'étape 2 les note avec deux scores **descriptifs** (voir [Scoring](#scoring)). Aucun score ne prédit le prix.
 
 ## Lancer
 
@@ -13,7 +13,8 @@ cd solana-scanner
 npm install
 npm run dev          # interface sur http://localhost:5173
 npm run test:live    # test réel de tous les endpoints (nécessite l'accès réseau à api.dexscreener.com)
-npm test             # tests unitaires hors ligne (normalisation, rate limit, retries, pipeline)
+npm run score:live   # scan réel + top 10 par Opportunity Score, détail des points et anomalies (-- 20 pour un top 20)
+npm test             # tests unitaires hors ligne (normalisation, rate limit, retries, pipeline, scoring)
 npm run typecheck
 ```
 
@@ -58,3 +59,50 @@ panneau **Couverture des champs** (combien de paires ont chaque champ) et **Jour
 
 En dev et en preview, le navigateur appelle `/dex/...`, que Vite relaie vers `https://api.dexscreener.com`
 (pas de souci CORS). Pour appeler l'API directement, définir `VITE_DEXSCREENER_BASE_URL=https://api.dexscreener.com`.
+
+## Scoring
+
+Code : `src/scoring/`. **Toutes les règles, pondérations et seuils sont dans
+[`src/scoring/config.ts`](src/scoring/config.ts)**. Le moteur (`score.ts`) est une fonction pure
+`scorePair(pair, now, config)` : mêmes données → même score.
+
+Les seuils sont des courbes `[x, y]` interpolées linéairement (bornées aux extrémités). Pour l'Opportunity,
+`y` est la fraction (0–1) des points de l'item ; pour le Risk, `y` est directement le nombre de points.
+
+### Opportunity Score (0–100) : qualité du setup et momentum observé
+
+| Catégorie | Pts | Items (points max) |
+|---|---|---|
+| Momentum | 25 | Δ prix 5 min (7) · Δ prix 1 h (10) · accélération : Δ5m − moyenne 5 min de l'heure (5) · tendance 6 h (3). Courbes décroissantes au-delà de +25 % / 5 min et +150 % / 1 h ; plafond à 12/25 si +100 % / 5 min, +500 % / 1 h ou +2000 % / 6 h |
+| Volume | 20 | volume 5 min (5) · volume 1 h (6) · volume 1 h / liquidité (5, maximum entre 1× et 3×, 0 à 15×) · accélération : volume 5 min / moyenne 5 min de l'heure (4) |
+| Buy Pressure | 20 | ratio achats 5 min (7) · ratio achats 1 h (7) · nombre de transactions 1 h (6). Ratio ignoré sous 5 txns (5 min) / 10 txns (1 h), confiance progressive jusqu'à 30 / 100 txns |
+| Liquidity | 15 | liquidity.usd (10) · liquidité / market cap (5, réduit si liquidité > market cap) |
+| Market Cap | 10 | favorise ~$100K–$1M, faible sous $20K ; plafonné à 3/10 si liquidité absente ou < $5K |
+| Age | 10 | facteur âge × facteur activité (transactions 1 h) : un token récent sans activité réelle n'a aucun point |
+
+Pour une paire de moins d'une heure, la fenêtre « 1 h » ne couvre que son âge : les moyennes par 5 min en tiennent compte.
+
+### Risk Score (0–100) : somme des facteurs, plafonnée à 100
+
+Liquidité faible · liquidité absente (pump.fun bonding curve : +20, autre DEX : +25) · market cap extrêmement faible ·
+très peu de transactions · chute de prix extrême (pire de Δ1h / Δ6h) · chute brutale sur 5 min · volume anormal
+par rapport à la liquidité · mouvements violents (5 min, 1 h) · paire très récente · données importantes manquantes
+(+3 par champ, max 15).
+
+### Données absentes
+
+Une donnée absente n'est **jamais** remplacée par 0 : l'item qui en dépend ne reçoit aucun point, il est marqué
+« absent » dans l'explication, et le manque augmente le Risk. (Un vrai `priceChange.m5 = 0 %` reçoit, lui, des points.)
+Les filtres excluent une paire dont la valeur testée est absente.
+
+### Étiquettes descriptives
+
+`HIGH RISK` (Risk ≥ 50), `MOMENTUM` (Opportunity ≥ 60, Momentum ≥ 15/25, Risk ≤ 40), `WATCH` (Opportunity ≥ 45,
+Risk ≤ 49). Elles décrivent l'état observé ; **ce ne sont pas des recommandations d'achat**.
+
+### Interface
+
+Colonnes Opportunity, Risk, points par catégorie, achats/ventes 5 min et 1 h ; tri par défaut sur l'Opportunity Score.
+Filtres : âge max, market cap min/max, liquidité min, volume 1 h min, Opportunity min, Risk max.
+Un clic sur une ligne ouvre « Pourquoi ce token a obtenu X/100 ? » : points de chaque catégorie et de chaque item,
+valeur mesurée, plafonds appliqués, facteurs de risque et champs absents.

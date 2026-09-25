@@ -223,3 +223,265 @@ table.small th {
 .row-error td {
   color: var(--down);
 }
+
+/* ─── Scoring ─────────────────────────────────────────────────────────── */
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 10px;
+}
+
+.filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+}
+
+.filters input {
+  width: 120px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.filters p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+button.secondary {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 12px;
+  font-weight: 500;
+}
+
+.small-text {
+  font-size: 12px;
+}
+
+.disclaimer {
+  font-size: 12px;
+  color: var(--muted);
+  border-left: 3px solid var(--warn-border);
+  padding-left: 8px;
+  margin: 0 0 10px;
+}
+
+.label-counts {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+}
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.badge.watch {
+  color: #79c0ff;
+  border-color: #1f6feb;
+  background: #0c2d6b55;
+}
+
+.badge.momentum {
+  color: #56d364;
+  border-color: #238636;
+  background: #0f5a2355;
+}
+
+.badge.high-risk {
+  color: #ff7b72;
+  border-color: #da3633;
+  background: #67060c55;
+}
+
+.score {
+  font-size: 15px;
+}
+
+.risk-low {
+  color: var(--up);
+}
+
+.risk-mid {
+  color: #d29922;
+}
+
+.risk-high {
+  color: var(--down);
+}
+
+.cat-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.cat-cell.partial {
+  text-decoration: underline dotted var(--warn-border);
+}
+
+.bar {
+  display: inline-block;
+  width: 48px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  vertical-align: middle;
+}
+
+.bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+tr.clickable {
+  cursor: pointer;
+}
+
+tr.selected {
+  background: #21262d;
+}
+
+th.g-score {
+  color: #d2a8ff;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: #010409b0;
+  display: flex;
+  justify-content: flex-end;
+  z-index: 10;
+}
+
+.detail {
+  position: relative;
+  width: min(760px, 100%);
+  height: 100%;
+  overflow-y: auto;
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+  padding: 20px 22px 40px;
+}
+
+.detail h2 {
+  margin: 0 32px 4px 0;
+  font-size: 20px;
+}
+
+.detail h3 {
+  margin: 22px 0 4px;
+  font-size: 15px;
+}
+
+.detail code {
+  word-break: break-all;
+}
+
+.detail .close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 22px;
+  padding: 2px 10px;
+}
+
+.detail-scores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.detail-scores > div {
+  flex: 1 1 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.big {
+  font-size: 30px;
+  line-height: 1;
+}
+
+table.breakdown {
+  white-space: normal;
+}
+
+table.breakdown td:first-child {
+  width: 34%;
+}
+
+table.breakdown td.num {
+  white-space: nowrap;
+  width: 1%;
+}
+
+table.breakdown tr.cat td {
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+table.breakdown tr.item td:first-child {
+  padding-left: 22px;
+  color: var(--muted);
+}
+
+table.breakdown tr.missing .absent {
+  color: var(--warn-border);
+  font-style: italic;
+}
+
+table.breakdown tr.capped td {
+  color: var(--warn-border);
+  padding-left: 22px;
+  font-size: 12px;
+}
+
+table.breakdown tr.total td {
+  font-size: 13px;
+  border-top: 2px solid var(--border);
+}
+
+@media (max-width: 700px) {
+  .controls input[type="search"] {
+    min-width: 0;
+    width: 100%;
+  }
+  .filters input {
+    width: 100px;
+  }
+}
