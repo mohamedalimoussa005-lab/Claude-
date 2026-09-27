@@ -252,3 +252,27 @@ historique complet, MEDIUM ≥ 10, sinon LOW.
 
 DEX candidates → on-chain validation → (à la demande) wallet discovery sur le token → shortlist (8 wallets :
 premiers acheteurs puis plus gros) → faits par wallet et historique borné. Cache RPC + limiteurs.
+
+## Étape 4.1 : accès aux historiques de wallets (Helius-first + fallback RPC)
+
+Code : `src/history/` (config dans [`src/history/config.ts`](src/history/config.ts)). Couche d'accès uniquement :
+aucun score modifié ou ajouté, pas encore branchée sur l'étape 4. Rien ne s'exécute dans le navigateur.
+
+| Chemin | Détail |
+|---|---|
+| Abstraction | `WalletHistoryProvider.getPage()` ; `WalletHistoryService` : `getHistoryPage`, `getRecentHistory`, `getOldestHistory`, `quick`, `getFullHistory`. Providers essayés dans l'ordre (Helius puis RPC public) |
+| PRIMARY (Helius) | `getTransactionsForAddress` : `transactionDetails: "full"`, `jsonParsed`, `paginationToken` (`slot:position`), `sortOrder` asc/desc, `commitment: finalized`, `filters.status`. Documenté « Developer plan+ » : essayé, jamais supposé |
+| FALLBACK (Helius) | `getSignaturesForAddress` (pagination `before`) + `POST /v0/transactions` (décodage enhanced, ≤ 100 signatures). Signatures déjà en cache non retéléchargées |
+| Bascule | 403 / 404 / méthode indisponible → fallback (désactive PRIMARY pour l'instance) ; 429 après retries → fallback pour cet appel ; 401 → provider RPC public |
+| PUBLIC_RPC | `SolanaRpc` existant (`getSignatures` + `getTransaction`), pages de 25 |
+| Classification | `classifyForWallet` : BUY / SELL / TRANSFER / UNKNOWN depuis les soldes (tokens pré/post, lamports, WSOL), signataires et programmes, mêmes règles que `decodeTrade`. Le `type`/`source` Helius n'est qu'un indice, jamais utilisé. Une transaction qui n'invoque que system/token/ATA/compute-budget/memo est un TRANSFER |
+| QUICK | 1 page récente (100) + 1 page la plus ancienne (20) : activité et origine du wallet |
+| DEEP | pagination newest → oldest, `maxPages`, `maxTransactions`, arrêt (`end_of_history`, `max_pages`, `max_transactions`, `error`, `stalled`), dédup par signature, état sauvegardé après chaque page (reprise). Uniquement sur appel explicite, 8 wallets max par instance |
+| Cache | `MemoryHistoryCache` : transactions finalisées par signature, index par wallet, état de pagination ; `snapshot()` / `fromSnapshot()` pour persister |
+
+**Clé Helius** : lue uniquement par `src/history/server/heliusEnv.ts` (`HELIUS_API_KEY`, jamais `VITE_*`), gardée dans un
+champ privé, placée seulement dans l'URL de la requête sortante, masquée de toute erreur et de tout log, jamais sérialisée.
+Le provider refuse de s'instancier dans un navigateur ; aucun fichier de `src/ui` ne l'importe (vérifié par les tests) ;
+`.env` est ignoré par git. L'application actuelle étant 100 % frontend (Vite), il faut une petite couche serveur
+(fonction serverless ou route Node) qui appelle `createServerHistoryService({ env: process.env, rpc })` et renvoie
+au navigateur des transactions normalisées, jamais la clé ni une URL Helius.

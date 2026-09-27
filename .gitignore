@@ -5,3 +5,8 @@ dist
 *.tsbuildinfo
 vite.config.js
 vite.config.d.ts
+
+# Secrets (HELIUS_API_KEY stays server-side, never committed)
+.env
+.env.*
+!.env.example
