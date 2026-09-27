@@ -321,3 +321,16 @@ L'UI ne construit jamais Helius. Aucune formule de Wallet Quality ni aucun seuil
 | Comparaison | `compareIntel(old, new)` : wallets analysés, historiques complets, positions reconstruites / réalisées, signaux bot, âge et financement connus, liens créateur, entrées de Confidence disponibles. Descriptif uniquement |
 
 `npm run wallets:live -- 1 --history [--deep]` exécute ce chemin côté Node (clé Helius lue uniquement dans ce processus).
+
+### Étape 4.2b : résilience RPC
+
+Code : `src/history/failure.ts`, `src/wallets/resilience.ts`. Aucune formule, pénalité ni seuil modifié.
+
+| Point | Règle |
+|---|---|
+| Erreurs structurées | `quota_exhausted` (HTTP/RPC 413, « data allowance »…), `rate_limited`, `timeout`, `network`, `method_unavailable`, `invalid_response`, `rpc_error`, `unknown`. Le message amont sert uniquement à classer ; il n'est jamais stocké dans le résultat ni utilisé comme signal |
+| Circuit breaker | `RunRpcGuard`, un par analyse de token : `healthy` → `quota_exhausted` → `unavailable_for_run`. Ensuite les appels au même RPC ne sont plus envoyés (échec immédiat, comptés dans `rpcCallsSkipped`). Timeout / réseau / rate limit ne l'ouvrent pas |
+| Isolation par wallet | ancien et nouveau chemin : un échec rend UNKNOWN les données du wallet concerné (`failure` : code + étapes `signatures` / `funding` / `history`), les données déjà obtenues sont gardées, les wallets suivants continuent. Nouveau chemin : si tous les fournisseurs d'historique ont épuisé leur quota, les wallets restants ne sont pas demandés ; Helius reste utilisé tant qu'il répond |
+| Token-fatal | uniquement si aucune signature du mint ne peut être listée (aucun acheteur identifiable) |
+| Résultat | `analysisStatus` (`complete` / `partial` / `failed`) et `diagnostics` (`walletsAttempted`, `walletsCompleted`, `walletsPartial`, `walletsSkipped`, `failureKinds`, `stages`, `tokenFatal`, `rpcCircuit`, `rpcCallsSkipped`) |
+| UNKNOWN | une panne ne crée aucun flag ni aucune pénalité : Quality identique à celle des mêmes faits sans l'enregistrement de l'échec. Les règles existantes s'appliquent aux données manquantes (dont le flag `incomplete`, inchangé) |

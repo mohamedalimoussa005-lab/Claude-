@@ -14,6 +14,27 @@ import type { WalletProfile } from "./profile.ts";
 import type { Trade } from "./trades.ts";
 import type { LaunchTimes, PricesSol, TokenScan, WalletFacts } from "./types.ts";
 import type { CreatorDistribution } from "./historyFacts.ts";
+import type { FailureKind } from "../history/failure.ts";
+
+export type AnalysisStatus = "complete" | "partial" | "failed";
+
+/** What could not be obtained, as codes (step 4.2b). Never a scoring input. */
+export interface IntelDiagnostics {
+  walletsAttempted: number;
+  /** No failure at all. */
+  walletsCompleted: number;
+  /** Some facts UNKNOWN after a failure, the rest kept. */
+  walletsPartial: number;
+  /** Nothing requested: the provider was unavailable for this run. */
+  walletsSkipped: number;
+  failureKinds: Partial<Record<FailureKind, number>>;
+  /** Failures outside wallet histories (token scan, creator, funder checks). */
+  stages: { stage: string; kind: FailureKind; wallet: string | null }[];
+  /** Set when the token itself could not be analysed. */
+  tokenFatal: FailureKind | null;
+  rpcCircuit: "healthy" | "unavailable_for_run";
+  rpcCallsSkipped: number;
+}
 
 export interface Buyer {
   address: string;
@@ -57,6 +78,8 @@ export interface WalletIntel {
   trackedInflowSol: number;
   trackedInflowUsdEst: number | null;
   notes: string[];
+  analysisStatus: AnalysisStatus;
+  diagnostics: IntelDiagnostics;
   /** Step 4.2 history-layer path only. */
   source?: "rpc" | "history";
   /** Creator token transfers to other wallets (not sells), when the creator's history was read. */
@@ -203,5 +226,35 @@ export function buildIntel(scan: TokenScan, buyers: Buyer[], facts: WalletFacts[
     trackedInflowSol: inflow,
     trackedInflowUsdEst: scan.solUsd !== null ? inflow * scan.solUsd : null,
     notes,
+    ...withDiagnostics(facts, [], null),
   };
+}
+
+/** Token status and diagnostics from the wallets' recorded failures plus token-level stages. */
+export function withDiagnostics(
+  facts: WalletFacts[],
+  stages: IntelDiagnostics["stages"],
+  tokenFatal: FailureKind | null,
+  circuit: { state: IntelDiagnostics["rpcCircuit"]; skipped: number } = { state: "healthy", skipped: 0 },
+): { analysisStatus: AnalysisStatus; diagnostics: IntelDiagnostics } {
+  const failureKinds: Partial<Record<FailureKind, number>> = {};
+  const count = (k: FailureKind) => (failureKinds[k] = (failureKinds[k] ?? 0) + 1);
+  for (const f of facts) for (const st of f.failure?.stages ?? []) count(st.kind);
+  for (const st of stages) count(st.kind);
+  if (tokenFatal) count(tokenFatal);
+  const skipped = facts.filter((f) => f.failure?.skipped).length;
+  const partial = facts.filter((f) => f.failure && !f.failure.skipped).length;
+  const diagnostics: IntelDiagnostics = {
+    walletsAttempted: facts.length,
+    walletsCompleted: facts.length - skipped - partial,
+    walletsPartial: partial,
+    walletsSkipped: skipped,
+    failureKinds,
+    stages,
+    tokenFatal,
+    rpcCircuit: circuit.state,
+    rpcCallsSkipped: circuit.skipped,
+  };
+  const analysisStatus: AnalysisStatus = tokenFatal ? "failed" : Object.keys(failureKinds).length ? "partial" : "complete";
+  return { analysisStatus, diagnostics };
 }

@@ -17,7 +17,10 @@ import { classifyForWallet, toTrade } from "../history/classify.ts";
 import type { HistoryCache } from "../history/cache.ts";
 import type { DeepHistory, DeepOptions, QuickHistory } from "../history/service.ts";
 import type { HistoryTx } from "../history/types.ts";
+import { allQuotaExhausted, classifyFailure } from "../history/failure.ts";
+import type { FailureKind } from "../history/failure.ts";
 import { detectBotSignals } from "./botSignals.ts";
+import { unknownWalletFacts } from "./resilience.ts";
 import { WALLET_CONFIG } from "./config.ts";
 import type { WalletConfig } from "./config.ts";
 import type { Trade } from "./trades.ts";
@@ -216,7 +219,8 @@ export async function creatorDistribution(
     let q: QuickHistory;
     try {
       q = await source.quick(r);
-    } catch {
+    } catch (e) {
+      if (allQuotaExhausted(e)) break; // no point asking again
       continue;
     }
     const sells = [...q.recent.page.txs, ...(q.originPage?.txs ?? [])].map((tx) => toTrade(tx, r)).filter((t): t is Trade => !!t && t.mint === mint && t.side === "sell");
@@ -234,25 +238,43 @@ export async function creatorDistribution(
   };
 }
 
-/** Per-token wallet stage on the history layer: shortlisted wallets, creator, distribution. */
+/** Per-token wallet stage on the history layer: shortlisted wallets, creator, distribution. Wallet-local failures never stop the token. */
 export async function collectTokenWalletsFromHistory(
   source: HistorySource,
   o: { picks: string[]; creator: string | null; mint: string; supply: number | null; deepAllowed: boolean },
   c: WalletConfig = WALLET_CONFIG,
-): Promise<{ facts: WalletFacts[]; creatorFacts: WalletFacts | null; distribution: CreatorDistribution | null; deepRuns: number }> {
+): Promise<{ facts: WalletFacts[]; creatorFacts: WalletFacts | null; distribution: CreatorDistribution | null; deepRuns: number; creatorFailure: FailureKind | null; sourceDown: FailureKind | null }> {
   const budget = new DeepBudget(c.historyLayer.deepMaxWalletsPerToken);
   const facts: WalletFacts[] = [];
-  for (const a of o.picks) facts.push(await collectWalletFactsFromHistory(source, a, { deepAllowed: o.deepAllowed, budget }, c));
-  let creatorFacts: WalletFacts | null = null;
-  let distribution: CreatorDistribution | null = null;
-  if (o.creator) {
+  // Set when every history provider ran out of quota: the remaining wallets are not requested at all.
+  let sourceDown: FailureKind | null = null;
+  for (const a of o.picks) {
+    if (sourceDown) {
+      facts.push(unknownWalletFacts(a, "history", sourceDown, true));
+      continue;
+    }
     try {
-      // QUICK only for the creator: its funding and its token transfers (distribution).
-      creatorFacts = await collectWalletFactsFromHistory(source, o.creator, { deepAllowed: false, budget }, c);
-      distribution = await creatorDistribution(source, creatorFacts, o.mint, o.supply, o.picks, c);
-    } catch {
-      creatorFacts = null;
+      facts.push(await collectWalletFactsFromHistory(source, a, { deepAllowed: o.deepAllowed, budget }, c));
+    } catch (e) {
+      facts.push(unknownWalletFacts(a, "history", classifyFailure(e), false));
+      if (allQuotaExhausted(e)) sourceDown = "quota_exhausted";
     }
   }
-  return { facts, creatorFacts, distribution, deepRuns: c.historyLayer.deepMaxWalletsPerToken - budget.remaining };
+  let creatorFacts: WalletFacts | null = null;
+  let distribution: CreatorDistribution | null = null;
+  let creatorFailure: FailureKind | null = null;
+  if (o.creator) {
+    if (sourceDown) creatorFailure = sourceDown;
+    else {
+      try {
+        // QUICK only for the creator: its funding and its token transfers (distribution).
+        creatorFacts = await collectWalletFactsFromHistory(source, o.creator, { deepAllowed: false, budget }, c);
+        distribution = await creatorDistribution(source, creatorFacts, o.mint, o.supply, o.picks, c);
+      } catch (e) {
+        creatorFacts = null;
+        creatorFailure = classifyFailure(e);
+      }
+    }
+  }
+  return { facts, creatorFacts, distribution, deepRuns: c.historyLayer.deepMaxWalletsPerToken - budget.remaining, creatorFailure, sourceDown };
 }

@@ -61,6 +61,7 @@ export type TraceResult =
   | "unauthorized"
   | "forbidden"
   | "rate_limited"
+  | "quota_exhausted"
   | "method_unavailable"
   | "timeout"
   | "network"

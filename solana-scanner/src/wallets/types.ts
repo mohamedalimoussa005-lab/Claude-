@@ -1,3 +1,4 @@
+import type { FailureKind } from "../history/failure.ts";
 import type { TraceStep } from "../history/types.ts";
 import type { OriginResult } from "../history/service.ts";
 import type { BotSignals } from "./botSignals.ts";
@@ -13,6 +14,17 @@ export interface TokenTransfer {
   amount: number;
   /** Owners whose balance of the same token moved the other way. */
   counterparties: string[];
+}
+
+/** Stage of a wallet analysis that could not be completed (step 4.2b). */
+export type WalletStage = "signatures" | "funding" | "history" | "creator" | "funder_check";
+
+/** Why part of a wallet's facts is UNKNOWN. Codes only: never an upstream message, never a scoring input. */
+export interface WalletFailure {
+  kind: FailureKind;
+  stages: { stage: WalletStage; kind: FailureKind }[];
+  /** Nothing was fetched for this wallet (circuit open / source down). */
+  skipped: boolean;
 }
 
 /** What the history layer adds to the facts (step 4.2 path only). */
@@ -69,6 +81,8 @@ export interface WalletFacts {
   undecodableTxs: number;
   /** Set only by the history-layer collector (step 4.2). */
   history?: HistoryExtras;
+  /** Set when a provider / RPC failure left part of the facts UNKNOWN (step 4.2b). */
+  failure?: WalletFailure;
 }
 
 /** Launch info known for some tokens (the scanner candidates). */

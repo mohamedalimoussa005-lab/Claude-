@@ -4,12 +4,14 @@
  * cap that is hit is reported instead of papered over.
  */
 
+import { classifyFailure } from "../history/failure.ts";
 import { findFunder } from "../onchain/collect.ts";
 import type { ParsedTransaction, SignatureInfo, SolanaRpc } from "../onchain/rpc.ts";
 import { WALLET_CONFIG } from "./config.ts";
 import type { WalletConfig } from "./config.ts";
 import { decodeTrade, ownersTouching } from "./trades.ts";
 import type { Trade } from "./trades.ts";
+import { addFailure } from "./resilience.ts";
 import type { TokenScan, WalletFacts } from "./types.ts";
 
 export type WalletRpc = Pick<SolanaRpc, "url" | "getSignatures" | "getTransaction">;
@@ -48,7 +50,14 @@ async function pageSignatures(rpc: WalletRpc, address: string, maxPages: number)
   const sigs: SignatureInfo[] = [];
   let before: string | undefined;
   for (let p = 0; p < maxPages; p++) {
-    const page = await rpc.getSignatures(address, 1000, before);
+    let page: SignatureInfo[];
+    try {
+      page = await rpc.getSignatures(address, 1000, before);
+    } catch (e) {
+      // Nothing listed yet: the caller decides. Pages already listed are kept (history marked incomplete).
+      if (!sigs.length) throw e;
+      return { sigs, complete: false };
+    }
     sigs.push(...page);
     if (page.length < 1000) return { sigs, complete: true };
     before = page[page.length - 1].signature;
@@ -138,7 +147,13 @@ export async function collectWalletFacts(rpc: WalletRpc, address: string, budget
   }
   const oldest = sigs[sigs.length - 1];
   facts.firstSeen = oldest.blockTime ? oldest.blockTime * 1000 : null;
-  const first = await rpc.getTransaction(oldest.signature);
+  let first: Awaited<ReturnType<WalletRpc["getTransaction"]>> = null;
+  try {
+    first = await rpc.getTransaction(oldest.signature);
+  } catch (e) {
+    // Funding stays UNKNOWN; the rest of the wallet is still analysed.
+    addFailure(facts, "funding", classifyFailure(e));
+  }
   if (first) {
     facts.funder = findFunder(first, address, 0.01);
     if (facts.funder) {
@@ -158,7 +173,15 @@ export async function collectWalletFacts(rpc: WalletRpc, address: string, budget
   }
   const trades: Trade[] = [];
   for (const s of ok) {
-    const tx = await rpc.getTransaction(s.signature);
+    let tx: Awaited<ReturnType<WalletRpc["getTransaction"]>>;
+    try {
+      tx = await rpc.getTransaction(s.signature);
+    } catch (e) {
+      const kind = classifyFailure(e);
+      addFailure(facts, "history", kind);
+      facts.historyNote = `historique UNKNOWN : transaction non récupérée (${kind})`;
+      return facts;
+    }
     if (!tx) {
       facts.historyNote = `transaction ${s.signature.slice(0, 8)}… introuvable : historique incomplet`;
       return facts;
@@ -181,7 +204,7 @@ export async function collectWalletFacts(rpc: WalletRpc, address: string, budget
 }
 
 /** Signature count (one page) for funders shared by several wallets: a full page suggests an exchange or service. */
-export async function checkFunders(rpc: WalletRpc, facts: WalletFacts[]): Promise<void> {
+export async function checkFunders(rpc: WalletRpc, facts: WalletFacts[], onFailure?: (e: unknown) => void): Promise<void> {
   const counts = new Map<string, number>();
   for (const f of facts) if (f.funder) counts.set(f.funder, (counts.get(f.funder) ?? 0) + 1);
   for (const [funder, n] of counts) {
@@ -189,8 +212,9 @@ export async function checkFunders(rpc: WalletRpc, facts: WalletFacts[]): Promis
     let count: number | null = null;
     try {
       count = (await rpc.getSignatures(funder, 1000)).length;
-    } catch {
+    } catch (e) {
       count = null;
+      onFailure?.(e);
     }
     for (const f of facts) if (f.funder === funder) f.funderSignatureCount = count;
   }

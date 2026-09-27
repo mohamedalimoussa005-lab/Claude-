@@ -11,6 +11,7 @@ import { HISTORY_CONFIG } from "./config.ts";
 import type { HistoryConfig } from "./config.ts";
 import { decodeCursor, encodeCursor } from "./cursor.ts";
 import { normalizeParsed } from "./normalize.ts";
+import { classifyFailure } from "./failure.ts";
 import { ProviderUnavailableError, traceResult } from "./provider.ts";
 import type { HistoryPage, HistoryTx, OriginStatus, PageRequest, PageStats, WalletHistoryProvider } from "./types.ts";
 
@@ -31,7 +32,8 @@ export class PublicRpcHistoryProvider implements WalletHistoryProvider {
       const page = req.order === "asc" ? await this.oldest(req) : await this.newest(req);
       return { ...page, trace: [{ source: "public_rpc", result: "success" }] };
     } catch (e) {
-      const kind = (e as { kind?: string }).kind;
+      // An exhausted quota (e.g. RPC 413 "data allowance") is its own code; the raw message is not kept in the trace.
+      const kind = classifyFailure(e) === "quota_exhausted" ? "quota_exhausted" : (e as { kind?: string }).kind;
       throw new ProviderUnavailableError("public_rpc", kind ?? "unknown", e instanceof Error ? e.message : String(e), [{ source: "public_rpc", result: traceResult(kind) }]);
     }
   }

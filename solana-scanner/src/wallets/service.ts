@@ -16,10 +16,13 @@ import { WALLET_CONFIG } from "./config.ts";
 import type { WalletConfig } from "./config.ts";
 import { collectTokenWalletsFromHistory } from "./historyFacts.ts";
 import type { HistorySource } from "./historyFacts.ts";
-import { aggregateBuyers, buildIntel, shortlist } from "./intel.ts";
+import { aggregateBuyers, buildIntel, shortlist, withDiagnostics } from "./intel.ts";
+import type { IntelDiagnostics } from "./intel.ts";
+import { CircuitOpenError, classifyFailure, RunRpcGuard } from "../history/failure.ts";
+import { unknownWalletFacts } from "./resilience.ts";
 import type { WalletIntel } from "./intel.ts";
 import { WSOL_MINT } from "./trades.ts";
-import type { LaunchTimes, PricesSol, WalletFacts } from "./types.ts";
+import type { LaunchTimes, PricesSol, TokenScan, WalletFacts } from "./types.ts";
 
 export type PriceClient = Pick<DexScreenerClient, "getPairsByTokenAddresses">;
 
@@ -59,10 +62,11 @@ export async function fetchPricesSol(dex: PriceClient, mints: string[], solUsd: 
 export interface WalletIntelOptions {
   /**
    * Step 4.2: history layer, injected by the backend (never built from UI code).
-   * Called once per token so each token gets its own DEEP budget. Without it,
+   * Called once per token so each token gets its own DEEP budget; `ctx.rpc` is
+   * the run's guarded RPC (for a public-RPC history provider). Without it,
    * the step 4 RPC path is used unchanged.
    */
-  history?: () => HistorySource;
+  history?: (ctx: { rpc: WalletRpc }) => HistorySource;
   /** Allow selective DEEP on shortlisted wallets (default false). */
   deep?: boolean;
 }
@@ -104,9 +108,23 @@ export class WalletIntelService {
     const supply = d.mintInfo.status === "ok" ? Number(d.mintInfo.value.supplyRaw) / 10 ** d.mintInfo.value.decimals : null;
     const creator = d.creator.status === "ok" ? d.creator.value.address : null;
     const holdersPct = d.holders.status === "ok" ? d.holders.value.pctByOwner : null;
+    // One circuit breaker per run: a spent RPC quota stops further calls to that RPC.
+    const rpc = new RunRpcGuard(this.rpc);
+    const stages: IntelDiagnostics["stages"] = [];
+    const circuit = () => ({ state: rpc.state, skipped: rpc.skipped });
+    const ictx = (creatorFunder: string | null, pricesSol: PricesSol) => ({ creator, creatorFunder, holdersPct, excluded, launchTimes: this.launchTimes, pricesSol, now: Date.now() });
 
     const solUsd = await fetchSolUsd(this.dex);
-    const scan = await collectTokenScan(this.rpc, mint, supply, solUsd, c);
+    let scan: TokenScan;
+    try {
+      scan = await collectTokenScan(rpc, mint, supply, solUsd, c);
+    } catch (e) {
+      // TOKEN-FATAL: not a single signature of the mint could be listed, so no buyer can be identified.
+      const empty: TokenScan = { mint, launch: null, signaturesScanned: 0, launchReachable: false, transactionsFetched: 0, transactionsFailed: 0, undecodable: 0, earlyTrades: [], recentTrades: [], supply, solUsd };
+      const intel = buildIntel(empty, [], [], ictx(null, {}), c);
+      return { ...intel, ...withDiagnostics([], [], classifyFailure(e), circuit()), source: this.options.history ? "history" : "rpc" };
+    }
+    if (rpc.state !== "healthy" || scan.transactionsFailed) stages.push({ stage: "token_scan", kind: rpc.openedBy ?? "unknown", wallet: null });
     if (scan.launch?.time) this.launchTimes[mint] = scan.launch.time;
 
     const buyers = aggregateBuyers(scan, { creator, holdersPct, excluded }, c);
@@ -116,25 +134,34 @@ export class WalletIntelService {
     let creatorFunder: string | null = null;
     let fromHistory: Awaited<ReturnType<typeof collectTokenWalletsFromHistory>> | null = null;
     if (this.options.history) {
-      fromHistory = await collectTokenWalletsFromHistory(this.options.history(), { picks: picks.map((b) => b.address), creator, mint, supply, deepAllowed: !!this.options.deep }, c);
+      fromHistory = await collectTokenWalletsFromHistory(this.options.history({ rpc }), { picks: picks.map((b) => b.address), creator, mint, supply, deepAllowed: !!this.options.deep }, c);
       facts = fromHistory.facts;
       creatorFunder = fromHistory.creatorFacts?.funder ?? null;
+      if (fromHistory.creatorFailure) stages.push({ stage: "creator", kind: fromHistory.creatorFailure, wallet: creator });
     } else {
-      for (const b of picks) facts.push(await collectWalletFacts(this.rpc, b.address, this.budget, c));
+      for (const b of picks) {
+        try {
+          facts.push(await collectWalletFacts(rpc, b.address, this.budget, c));
+        } catch (e) {
+          // WALLET-LOCAL: this wallet is UNKNOWN, the others are still analysed.
+          facts.push(unknownWalletFacts(b.address, "signatures", classifyFailure(e), e instanceof CircuitOpenError));
+        }
+      }
       if (creator) {
         try {
-          creatorFunder = (await collectWalletFacts(this.rpc, creator, new HistoryBudget(0), c)).funder;
-        } catch {
+          creatorFunder = (await collectWalletFacts(rpc, creator, new HistoryBudget(0), c)).funder;
+        } catch (e) {
           creatorFunder = null;
+          stages.push({ stage: "creator", kind: classifyFailure(e), wallet: creator });
         }
       }
     }
-    await checkFunders(this.rpc, facts);
+    await checkFunders(rpc, facts, (e) => stages.push({ stage: "funder_check", kind: classifyFailure(e), wallet: null }));
 
     const historyMints = [...new Set(facts.flatMap((f) => (f.trades ?? []).map((t) => t.mint)))];
     const pricesSol = await fetchPricesSol(this.dex, historyMints, solUsd);
 
-    const intel = buildIntel(scan, buyers, facts, { creator, creatorFunder, holdersPct, excluded, launchTimes: this.launchTimes, pricesSol, now: Date.now() }, c);
+    const intel = { ...buildIntel(scan, buyers, facts, ictx(creatorFunder, pricesSol), c), ...withDiagnostics(facts, stages, null, circuit()) };
     if (fromHistory) return { ...intel, source: "history", creatorDistribution: fromHistory.distribution, deepRuns: fromHistory.deepRuns };
     return { ...intel, source: "rpc" };
   }

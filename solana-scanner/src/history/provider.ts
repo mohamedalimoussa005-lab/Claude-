@@ -11,6 +11,8 @@ export function traceResult(kind: string | undefined): TraceResult {
       return "forbidden";
     case "rate_limit":
       return "rate_limited";
+    case "quota_exhausted":
+      return "quota_exhausted";
     case "unavailable":
       return "method_unavailable";
     case "timeout":

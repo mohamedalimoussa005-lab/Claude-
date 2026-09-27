@@ -25,6 +25,7 @@ import { WALLET_CONFIG } from "../src/wallets/config.ts";
 import { WalletIntelService } from "../src/wallets/service.ts";
 import { createServerProviders } from "../src/history/server/heliusEnv.ts";
 import { WalletHistoryService } from "../src/history/service.ts";
+import { PublicRpcHistoryProvider } from "../src/history/publicRpc.ts";
 
 const args = process.argv.slice(2);
 const useHistory = args.includes("--history");
@@ -36,7 +37,9 @@ const dex = new DexScreenerClient();
 const onchain = new OnchainService(rpc);
 const history = useHistory ? createServerProviders({ env: process.env, rpc }) : null;
 if (history) console.log(`Historiques : WalletHistoryService — Helius ${history.heliusEnabled ? "activé" : "désactivé (RPC public)"} — DEEP ${allowDeep ? "sélectif" : "désactivé"}`);
-const wallets = new WalletIntelService(rpc, dex, WALLET_CONFIG, history ? { history: () => new WalletHistoryService({ providers: history.providers }), deep: allowDeep } : {});
+// Helius providers are shared; the public-RPC history provider uses each run's guarded RPC (circuit breaker).
+const heliusOnly = history ? history.providers.filter((p) => p.name !== "public_rpc") : [];
+const wallets = new WalletIntelService(rpc, dex, WALLET_CONFIG, history ? { history: ({ rpc: guarded }) => new WalletHistoryService({ providers: [...heliusOnly, new PublicRpcHistoryProvider(guarded)] }), deep: allowDeep } : {});
 
 const scan = await scanSolana(dex);
 const rows = scorePairs(mostLiquidPairPerToken(scan.pairs), scan.fetchedAt);
@@ -73,6 +76,8 @@ for (const row of candidates) {
         `${p.flags.length ? ` · ⚑ ${p.flags.map((f) => f.label).join(", ")}` : ""}`,
     );
   }
+  const dg = intel.diagnostics;
+  console.log(`   Analyse : ${intel.analysisStatus} · wallets ${dg.walletsCompleted} complets / ${dg.walletsPartial} partiels / ${dg.walletsSkipped} non demandés · échecs ${JSON.stringify(dg.failureKinds)} · RPC ${dg.rpcCircuit}${dg.rpcCallsSkipped ? ` (${dg.rpcCallsSkipped} appels évités)` : ""}`);
   if (intel.source === "history") {
     console.log(`   Historiques (step 4.2) : DEEP lancés ${intel.deepRuns ?? 0}`);
     for (const t of intel.tracked) {
