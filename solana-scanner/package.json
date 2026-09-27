@@ -10,6 +10,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "server": "node --experimental-strip-types --no-warnings server/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --no-warnings --test test/*.test.ts",
     "test:live": "node --experimental-strip-types --no-warnings scripts/live-test.ts",

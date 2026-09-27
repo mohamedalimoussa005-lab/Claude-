@@ -1,10 +1,10 @@
 /**
- * SERVER-SIDE ONLY. Builds the wallet history service for a backend process
- * (Node server / serverless function), reading the Helius key from the
- * process environment. Never import this from src/ui: the key must never
- * reach the browser (no VITE_* variable, no localStorage, no API response).
+ * SERVER-SIDE ONLY. Builds the wallet history providers / service for a
+ * backend process (Node server / serverless function), reading the Helius key
+ * from the process environment. Never import this from src/ui: the key must
+ * never reach the browser (no VITE_* variable, no localStorage, no API response).
  *
- * Without a key, the service runs on the public RPC only.
+ * Without a key, only the public RPC provider is used.
  */
 
 import type { SolanaRpc } from "../../onchain/rpc.ts";
@@ -24,6 +24,21 @@ export function readHeliusKey(env: Record<string, string | undefined>): string |
   return key ? key : null;
 }
 
+/** Providers in order: Helius (when a key is set), then the public RPC. Long-lived: share them across requests. */
+export function createServerProviders(o: {
+  env: Record<string, string | undefined>;
+  rpc: Pick<SolanaRpc, "getSignatures" | "getTransaction">;
+  config?: HistoryConfig;
+  onRequest?: (e: HistoryLogEntry) => void;
+}): { providers: WalletHistoryProvider[]; heliusEnabled: boolean } {
+  const config = o.config ?? HISTORY_CONFIG;
+  const providers: WalletHistoryProvider[] = [];
+  const key = readHeliusKey(o.env);
+  if (key) providers.push(new HeliusHistoryProvider({ apiKey: key, config: config.helius, onRequest: o.onRequest }));
+  providers.push(new PublicRpcHistoryProvider(o.rpc, config.publicRpc));
+  return { providers, heliusEnabled: key !== null };
+}
+
 export function createServerHistoryService(o: {
   env: Record<string, string | undefined>;
   rpc: Pick<SolanaRpc, "getSignatures" | "getTransaction">;
@@ -31,10 +46,6 @@ export function createServerHistoryService(o: {
   config?: HistoryConfig;
   onRequest?: (e: HistoryLogEntry) => void;
 }): { service: WalletHistoryService; heliusEnabled: boolean } {
-  const config = o.config ?? HISTORY_CONFIG;
-  const providers: WalletHistoryProvider[] = [];
-  const key = readHeliusKey(o.env);
-  if (key) providers.push(new HeliusHistoryProvider({ apiKey: key, config: config.helius, onRequest: o.onRequest }));
-  providers.push(new PublicRpcHistoryProvider(o.rpc, config.publicRpc));
-  return { service: new WalletHistoryService({ providers, cache: o.cache, config }), heliusEnabled: key !== null };
+  const { providers, heliusEnabled } = createServerProviders(o);
+  return { service: new WalletHistoryService({ providers, cache: o.cache, config: o.config ?? HISTORY_CONFIG }), heliusEnabled };
 }

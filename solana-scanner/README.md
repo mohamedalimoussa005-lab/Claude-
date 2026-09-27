@@ -276,3 +276,26 @@ Le provider refuse de s'instancier dans un navigateur ; aucun fichier de `src/ui
 `.env` est ignoré par git. L'application actuelle étant 100 % frontend (Vite), il faut une petite couche serveur
 (fonction serverless ou route Node) qui appelle `createServerHistoryService({ env: process.env, rpc })` et renvoie
 au navigateur des transactions normalisées, jamais la clé ni une URL Helius.
+
+### Backend local : `GET /api/wallet-history`
+
+Code : `server/` (Node `node:http`, aucun framework, hors de `src/` donc jamais bundlé par Vite).
+
+```bash
+npm run server   # API sur http://127.0.0.1:8787 (lit solana-scanner/.env s'il existe)
+npm run dev      # dans un autre terminal : Vite transmet /api au backend
+```
+
+Variables **serveur uniquement** (fichier `.env`, ignoré par git ; jamais de `VITE_*`) : `HELIUS_API_KEY` (optionnelle,
+sinon RPC public), `WALLET_HISTORY_DEEP_TOKEN` (optionnelle, sinon DEEP désactivé), `WALLET_HISTORY_PORT`,
+`WALLET_HISTORY_CACHE`.
+
+| Paramètre / règle | Détail |
+|---|---|
+| `address` | base58 décodant exactement 32 octets ; tout autre paramètre → 400 |
+| `mode=quick` | page récente + page la plus ancienne ; 30 requêtes / min / client |
+| `mode=deep` | exige `WALLET_HISTORY_DEEP_TOKEN` côté serveur, `Authorization: Bearer <token>` et un client loopback ; 3 / min ; budget 20 pages / 2 000 transactions par analyse ; reprise automatique à l'appel suivant (`resumable`) |
+| Réponse | `address`, `mode`, `provider(s)`, `complete`, `resumable`, `stopReason`, `pagination`, `origin`, `transactions` (normalisées), `truncated`, `warnings` (provider + type d'erreur) |
+| Protections | écoute sur 127.0.0.1, en-tête Host local obligatoire (anti DNS-rebinding), 2 analyses simultanées max (503), timeout 60 s (504, l'analyse garde son créneau jusqu'à sa fin réelle), réponse ≤ 2 Mo (transactions les plus anciennes retirées, `truncated`), `cache-control: no-store` |
+| Erreurs | codes fixes (`invalid_address`, `rate_limited`, `upstream_unavailable` + `{provider, kind}`…) ; jamais la clé, une URL Helius, une variable d'environnement ni le message amont |
+| Cache | `MemoryHistoryCache` partagé, persisté dans `.cache/wallet-history.json` (écriture atomique, ignoré par git) après chaque analyse et à l'arrêt ; rechargé au démarrage, donc un DEEP reprend après redémarrage. Contient uniquement des transactions normalisées et l'état de pagination |

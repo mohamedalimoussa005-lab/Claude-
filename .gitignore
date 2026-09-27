@@ -10,3 +10,5 @@ vite.config.d.ts
 .env
 .env.*
 !.env.example
+# Wallet history API cache snapshots (server-side)
+.cache/

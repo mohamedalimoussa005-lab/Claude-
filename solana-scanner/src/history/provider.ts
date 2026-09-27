@@ -14,10 +14,17 @@ export class ProviderUnavailableError extends Error {
   }
 }
 
+/** Why one provider could not serve a request. `kind` is safe to expose; `message` is for server logs. */
+export interface ProviderFailure {
+  provider: HistoryProviderName;
+  kind: string;
+  message: string;
+}
+
 /** Every provider failed for a request. */
 export class HistoryUnavailableError extends Error {
-  readonly failures: { provider: HistoryProviderName; message: string }[];
-  constructor(failures: { provider: HistoryProviderName; message: string }[]) {
+  readonly failures: ProviderFailure[];
+  constructor(failures: ProviderFailure[]) {
     super(`No history provider could serve the request: ${failures.map((f) => `${f.provider}: ${f.message}`).join(" | ") || "no provider configured"}`);
     this.name = "HistoryUnavailableError";
     this.failures = failures;

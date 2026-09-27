@@ -17,12 +17,13 @@ import { HISTORY_CONFIG } from "./config.ts";
 import type { HistoryConfig } from "./config.ts";
 import { MemoryHistoryCache } from "./cache.ts";
 import type { HistoryCache, PaginationState } from "./cache.ts";
-import { HistoryUnavailableError } from "./provider.ts";
+import { HistoryUnavailableError, ProviderUnavailableError } from "./provider.ts";
+import type { ProviderFailure } from "./provider.ts";
 import type { HistoryOrder, HistoryPage, HistoryProviderName, HistoryTx, WalletHistoryProvider } from "./types.ts";
 
 export interface ServicePage extends HistoryPage {
   /** Providers that failed before this one answered. */
-  failures: { provider: HistoryProviderName; message: string }[];
+  failures: ProviderFailure[];
   /** Transactions not seen before this call. */
   newTxs: number;
 }
@@ -49,6 +50,8 @@ export interface DeepHistory {
   calls: number;
   providers: HistoryProviderName[];
   error?: string;
+  /** Provider failures behind an "error" stop. */
+  failures?: ProviderFailure[];
 }
 
 export interface DeepOptions {
@@ -81,7 +84,7 @@ export class WalletHistoryService {
       try {
         page = await p.getPage({ address, ...req, cached: (s) => this.cache.getTx(s) });
       } catch (e) {
-        failures.push({ provider: p.name, message: e instanceof Error ? e.message : String(e) });
+        failures.push({ provider: p.name, kind: e instanceof ProviderUnavailableError ? e.kind : "error", message: e instanceof Error ? e.message : String(e) });
         continue;
       }
       const seen = new Set<string>();
@@ -133,6 +136,7 @@ export class WalletHistoryService {
     let calls = 0;
     let stop: DeepStopReason;
     let error: string | undefined;
+    let failures: ProviderFailure[] | undefined;
     const save = (reason: DeepStopReason | null) => {
       state.transactions = known.size;
       state.stopReason = reason;
@@ -158,6 +162,7 @@ export class WalletHistoryService {
         } catch (e) {
           stop = "error";
           error = e instanceof Error ? e.message : String(e);
+          if (e instanceof HistoryUnavailableError) failures = e.failures;
           break;
         }
         pagesThisRun++;
@@ -193,6 +198,7 @@ export class WalletHistoryService {
       calls,
       providers: [...providers],
       ...(error ? { error } : {}),
+      ...(failures ? { failures } : {}),
     };
   }
 }

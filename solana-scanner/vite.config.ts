@@ -25,8 +25,17 @@ const dexProxy = {
   },
 };
 
+// Wallet history API (server/index.ts, `npm run server`): the browser only ever
+// calls /api; the Helius key stays in that Node process.
+const apiProxy = {
+  "/api": {
+    target: "http://127.0.0.1:8787",
+    changeOrigin: false,
+  },
+};
+
 export default defineConfig({
   plugins: [react()],
-  server: { proxy: dexProxy },
-  preview: { proxy: dexProxy },
+  server: { proxy: { ...dexProxy, ...apiProxy } },
+  preview: { proxy: { ...dexProxy, ...apiProxy } },
 });
