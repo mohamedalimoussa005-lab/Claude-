@@ -34,6 +34,9 @@ export interface IntelDiagnostics {
   tokenFatal: FailureKind | null;
   rpcCircuit: "healthy" | "unavailable_for_run";
   rpcCallsSkipped: number;
+  /** Server-side RPC providers used (labels only: authenticated_rpc / public_rpc), when the RPC reports them. */
+  rpcProviders?: { label: string; state: string; openedBy: FailureKind | null; ok: number; failed: number }[];
+  rpcFallbacks?: number;
 }
 
 export interface Buyer {

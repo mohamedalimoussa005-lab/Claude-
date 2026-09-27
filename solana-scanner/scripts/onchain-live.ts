@@ -12,14 +12,17 @@
 import { DexScreenerClient } from "../src/api/dexscreener.ts";
 import { mostLiquidPairPerToken, scanSolana } from "../src/domain/scanner.ts";
 import { ONCHAIN_CONFIG, ONCHAIN_DISCLAIMER } from "../src/onchain/config.ts";
-import { SolanaRpc } from "../src/onchain/rpc.ts";
+import { createServerSolanaRpc } from "../src/rpc/serverRpc.ts";
 import type { RpcLogEntry } from "../src/onchain/rpc.ts";
 import { OnchainService, selectCandidates } from "../src/onchain/service.ts";
 import { scorePairs } from "../src/scoring/score.ts";
 
 const count = Number(process.argv[2] ?? ONCHAIN_CONFIG.candidates.max);
 const log: RpcLogEntry[] = [];
-const rpc = new SolanaRpc({ url: process.env.SOLANA_RPC_URL, onRequest: (e) => log.push(e) });
+// Server-side RPC: authenticated (HELIUS_API_KEY) → public fallback. Labels only in output, never the endpoint.
+const serverRpc = createServerSolanaRpc({ env: process.env, onRequest: (e) => log.push(e) });
+const rpc = serverRpc.rpc;
+console.log(`RPC : ${serverRpc.providers.join(" → ")}`);
 const service = new OnchainService(rpc, { ...ONCHAIN_CONFIG, candidates: { ...ONCHAIN_CONFIG.candidates, max: count } });
 
 const scan = await scanSolana(new DexScreenerClient());

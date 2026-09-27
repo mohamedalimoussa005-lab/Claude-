@@ -122,7 +122,7 @@ export class WalletIntelService {
       // TOKEN-FATAL: not a single signature of the mint could be listed, so no buyer can be identified.
       const empty: TokenScan = { mint, launch: null, signaturesScanned: 0, launchReachable: false, transactionsFetched: 0, transactionsFailed: 0, undecodable: 0, earlyTrades: [], recentTrades: [], supply, solUsd };
       const intel = buildIntel(empty, [], [], ictx(null, {}), c);
-      return { ...intel, ...withDiagnostics([], [], classifyFailure(e), circuit()), source: this.options.history ? "history" : "rpc" };
+      return this.withRpcProviders({ ...intel, ...withDiagnostics([], [], classifyFailure(e), circuit()), source: this.options.history ? "history" : "rpc" });
     }
     if (rpc.state !== "healthy" || scan.transactionsFailed) stages.push({ stage: "token_scan", kind: rpc.openedBy ?? "unknown", wallet: null });
     if (scan.launch?.time) this.launchTimes[mint] = scan.launch.time;
@@ -162,7 +162,13 @@ export class WalletIntelService {
     const pricesSol = await fetchPricesSol(this.dex, historyMints, solUsd);
 
     const intel = { ...buildIntel(scan, buyers, facts, ictx(creatorFunder, pricesSol), c), ...withDiagnostics(facts, stages, null, circuit()) };
-    if (fromHistory) return { ...intel, source: "history", creatorDistribution: fromHistory.distribution, deepRuns: fromHistory.deepRuns };
-    return { ...intel, source: "rpc" };
+    if (fromHistory) return this.withRpcProviders({ ...intel, source: "history", creatorDistribution: fromHistory.distribution, deepRuns: fromHistory.deepRuns });
+    return this.withRpcProviders({ ...intel, source: "rpc" });
+  }
+
+  /** Server-side failover RPC (duck-typed, so this module stays free of server code): provider labels only. */
+  private withRpcProviders(intel: WalletIntel): WalletIntel {
+    const d = (this.rpc as { diagnostics?: () => { providers: IntelDiagnostics["rpcProviders"]; fallbacks: number } }).diagnostics?.();
+    return d ? { ...intel, diagnostics: { ...intel.diagnostics, rpcProviders: d.providers, rpcFallbacks: d.fallbacks } } : intel;
   }
 }

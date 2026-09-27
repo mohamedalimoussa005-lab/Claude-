@@ -334,3 +334,16 @@ Code : `src/history/failure.ts`, `src/wallets/resilience.ts`. Aucune formule, p�
 | Token-fatal | uniquement si aucune signature du mint ne peut être listée (aucun acheteur identifiable) |
 | Résultat | `analysisStatus` (`complete` / `partial` / `failed`) et `diagnostics` (`walletsAttempted`, `walletsCompleted`, `walletsPartial`, `walletsSkipped`, `failureKinds`, `stages`, `tokenFatal`, `rpcCircuit`, `rpcCallsSkipped`) |
 | UNKNOWN | une panne ne crée aucun flag ni aucune pénalité : Quality identique à celle des mêmes faits sans l'enregistrement de l'échec. Les règles existantes s'appliquent aux données manquantes (dont le flag `incomplete`, inchangé) |
+
+### RPC Solana côté serveur (authentifié + fallback public)
+
+Code : `src/rpc/serverRpc.ts` (Node uniquement ; jamais importé par `src/ui`). Utilisé par `server/index.ts`,
+`wallets:live` et `onchain:live`. L'UI reste sur le RPC public via le proxy Vite `/solana-rpc`.
+
+| Point | Règle |
+|---|---|
+| Fournisseurs | `HELIUS_API_KEY` défini → `authenticated_rpc` puis `public_rpc` ; sinon `public_rpc` seul (comme avant). `SOLANA_RPC_URL` reste possible pour un endpoint public personnalisé, mais refusé s'il contient une clé |
+| Secret | l'URL authentifiée n'existe que dans la closure de `authenticatedFetch` ; le client porte le libellé `authenticated_rpc`. Réponses et erreurs sont réécrites : l'endpoint devient `[authenticated_rpc]`, toute clé `[redacted]`. Aucune URL dans les logs, erreurs, sections Step 3, diagnostics, cache ou réponses API |
+| Bascule | au plus un fallback par opération (authentifié → public) ; circuit breaker par fournisseur : quota épuisé, 401 ou 403 → fournisseur indisponible pour l'exécution ; timeout / réseau → fallback pour cet appel seulement. `RunRpcGuard` reste au-dessus |
+| Diagnostics | `diagnostics.rpcProviders` (libellé, état, cause, compteurs) et `rpcFallbacks` ; jamais l'URL |
+| Algorithmes | Step 3 et Step 4 inchangés : seul le transport change (`getAccountInfo`, `getProgramAccounts`, `getMultipleAccounts`, `getSignaturesForAddress`, `getTransaction`, `getBalance`). La couche historique Helius Enhanced reste séparée |

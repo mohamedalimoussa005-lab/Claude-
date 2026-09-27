@@ -15,7 +15,7 @@
 import { DexScreenerClient } from "../src/api/dexscreener.ts";
 import { mostLiquidPairPerToken, scanSolana } from "../src/domain/scanner.ts";
 import { ONCHAIN_CONFIG } from "../src/onchain/config.ts";
-import { SolanaRpc } from "../src/onchain/rpc.ts";
+import { createServerSolanaRpc } from "../src/rpc/serverRpc.ts";
 import type { RpcLogEntry } from "../src/onchain/rpc.ts";
 import { OnchainService, selectCandidates } from "../src/onchain/service.ts";
 import { scorePairs } from "../src/scoring/score.ts";
@@ -32,7 +32,10 @@ const useHistory = args.includes("--history");
 const allowDeep = args.includes("--deep");
 const count = Number(args.find((a) => !a.startsWith("--")) ?? ONCHAIN_CONFIG.candidates.max);
 const log: RpcLogEntry[] = [];
-const rpc = new SolanaRpc({ url: process.env.SOLANA_RPC_URL, onRequest: (e) => log.push(e) });
+// Server-side RPC: authenticated (HELIUS_API_KEY) → public fallback. Labels only in output, never the endpoint.
+const serverRpc = createServerSolanaRpc({ env: process.env, onRequest: (e) => log.push(e) });
+const rpc = serverRpc.rpc;
+console.log(`RPC : ${serverRpc.providers.join(" → ")}`);
 const dex = new DexScreenerClient();
 const onchain = new OnchainService(rpc);
 const history = useHistory ? createServerProviders({ env: process.env, rpc }) : null;
