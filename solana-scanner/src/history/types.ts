@@ -120,6 +120,11 @@ export interface HistoryPage {
   stats: PageStats;
   /** Oldest-first requests only. */
   originStatus?: OriginStatus;
+  /**
+   * Oldest-first requests only: signatures actually listed while looking for
+   * the start (failed ones included), not the transactions decoded.
+   */
+  walkedSignatures?: number;
   /** Non-sensitive steps taken by the provider for this page. */
   trace: TraceStep[];
 }

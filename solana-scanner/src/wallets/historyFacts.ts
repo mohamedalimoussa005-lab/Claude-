@@ -15,7 +15,7 @@
 
 import { classifyForWallet, toTrade } from "../history/classify.ts";
 import type { HistoryCache } from "../history/cache.ts";
-import type { DeepHistory, DeepOptions, QuickHistory } from "../history/service.ts";
+import type { CompletionResult, DeepHistory, DeepOptions, QuickHistory } from "../history/service.ts";
 import type { HistoryTx } from "../history/types.ts";
 import { allQuotaExhausted, classifyFailure } from "../history/failure.ts";
 import type { FailureKind } from "../history/failure.ts";
@@ -30,7 +30,32 @@ import type { HistoryExtras, TokenTransfer, WalletFacts } from "./types.ts";
 export interface HistorySource {
   readonly cache: HistoryCache;
   quick(address: string): Promise<QuickHistory>;
+  completeRecent(address: string, cursor: string, opts: { maxPages: number; maxTransactions: number; pageLimit: number }): Promise<CompletionResult>;
   getFullHistory(address: string, opts?: DeepOptions): Promise<DeepHistory>;
+}
+
+/**
+ * QUICK completion decision (step 4.2c), from what QUICK already knows:
+ *   - start of history not reached within the origin budget → never
+ *     (thousands of signatures: this is DEEP's job, if at all);
+ *   - total size known exactly (the signature walk reached the start, or the
+ *     recent page covered it) → only if total ≤ maxKnownSignatures and the
+ *     rest fits in maxAdditionalPages / maxAdditionalTransactions;
+ *   - total size unknown → one probe page only.
+ * Returns the page budget, or why it is skipped.
+ */
+export function quickCompletionPlan(q: QuickHistory, c: WalletConfig = WALLET_CONFIG): { maxPages: number } | { skip: string } {
+  const qc = c.historyLayer.quickCompletion;
+  if (!qc.enabled) return { skip: "disabled" };
+  if (!q.recent.page.nextCursor) return { skip: "no_cursor" };
+  if (q.origin.reason === "budget_exhausted") return { skip: "history_too_long" };
+  const total = q.origin.totalSignatures;
+  if (total === null) return { maxPages: qc.probePages };
+  const remaining = Math.max(0, total - q.recent.stats.signaturesListed);
+  const pagesNeeded = Math.max(1, Math.ceil(remaining / qc.pageLimit));
+  if (total > qc.maxKnownSignatures || remaining > qc.maxAdditionalTransactions || pagesNeeded > qc.maxAdditionalPages) return { skip: "history_too_long" };
+  // One extra page when the last one may come back exactly full (the end is only proven by a short page).
+  return { maxPages: Math.min(qc.maxAdditionalPages, pagesNeeded + (remaining % qc.pageLimit === 0 ? 1 : 0)) };
 }
 
 /** DEEP runs left for the current token. */
@@ -98,9 +123,28 @@ export async function collectWalletFactsFromHistory(
 
   let complete = q.recent.complete;
   let completeness: HistoryExtras["completeness"] = complete ? "recent_page_covers_history" : "incomplete";
+  const quickCompletion: HistoryExtras["quickCompletion"] = { attempted: false, skippedReason: complete ? "complete_from_quick" : null, stopReason: null, pages: 0 };
+  if (!complete) {
+    const plan = quickCompletionPlan(q, c);
+    if ("skip" in plan) quickCompletion.skippedReason = plan.skip;
+    else {
+      const qc = h.quickCompletion;
+      const r = await source.completeRecent(address, q.recent.page.nextCursor!, { maxPages: plan.maxPages, maxTransactions: qc.maxAdditionalTransactions, pageLimit: qc.pageLimit });
+      quickCompletion.attempted = true;
+      quickCompletion.stopReason = r.stopReason;
+      quickCompletion.pages = r.pages;
+      trace.push({ phase: "quick_completion", steps: r.trace });
+      for (const tx of r.txs) byId.set(tx.signature, tx);
+      // Complete only when the end of the history was really reached.
+      if (r.reachedEnd) {
+        complete = true;
+        completeness = "quick_completion_complete";
+      }
+    }
+  }
   const deep: HistoryExtras["deep"] = { attempted: false, skippedReason: null, stopReason: null };
   if (!complete) {
-    const tooLong = q.origin.reason === "budget_exhausted" && q.origin.signaturesScanned >= h.deepMaxTransactions;
+    const tooLong = (q.origin.reason === "budget_exhausted" && q.origin.signaturesScanned >= h.deepMaxTransactions) || (q.origin.totalSignatures ?? 0) > h.deepMaxTransactions;
     deep.skippedReason = !opts.deepAllowed
       ? "deep_disabled"
       : bot.botLike
@@ -151,11 +195,13 @@ export async function collectWalletFactsFromHistory(
 
   const listed = q.recent.stats.signaturesListed;
   const lowerBound = !complete;
-  const signatureCount = complete ? txs.length : Math.max(txs.length, listed, origin.reason === "budget_exhausted" ? origin.signaturesScanned : 0);
+  // Signatures listed by the origin walk count (failed ones included), never the decoded transactions.
+  const walked = origin.method === "signature_walk" ? origin.signaturesScanned : 0;
+  const signatureCount = complete ? Math.max(txs.length, origin.totalSignatures ?? 0) : Math.max(txs.length, listed, walked, origin.totalSignatures ?? 0);
   const { trades, undecodable } = complete ? tradesOf(txs, address) : { trades: null, undecodable: 0 };
 
   const historyNote = complete
-    ? `historique complet (${completeness === "deep_complete" ? "DEEP" : "QUICK"}) : ${txs.length} transactions réussies, ${trades!.length} trades décodés`
+    ? `historique complet (${completeness === "deep_complete" ? "DEEP" : completeness === "quick_completion_complete" ? "QUICK + complétion" : "QUICK"}) : ${txs.length} transactions réussies, ${trades!.length} trades décodés`
     : `historique incomplet : ${txs.length} transactions récentes${lowerBound ? `, ≥ ${signatureCount.toLocaleString("en-US")} signatures` : ""}${deep.skippedReason ? ` (DEEP non lancé : ${deep.skippedReason})` : deep.stopReason ? ` (DEEP arrêté : ${deep.stopReason})` : ""}`;
 
   return {
@@ -178,6 +224,7 @@ export async function collectWalletFactsFromHistory(
       origin,
       bot,
       transfers: tokenTransfers(txs, address),
+      quickCompletion,
       deep,
       providerTrace: trace,
       unknowns,

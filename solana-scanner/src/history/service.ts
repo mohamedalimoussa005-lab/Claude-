@@ -43,8 +43,14 @@ export interface OriginResult {
   /** true when the answer is definitive (start of history reached). */
   complete: boolean;
   reason: OriginReason;
-  /** Signatures scanned looking for the start (signature walk). */
+  /** Signatures listed while looking for the start (failed ones included; never the decoded count). 0 when nothing was listed (cache). */
   signaturesScanned: number;
+  /**
+   * Exact number of signatures in the wallet's history when the listing
+   * reached its start (signature walk or a recent page covering everything);
+   * null when unknown (oldest-first provider page, cache, not found).
+   */
+  totalSignatures: number | null;
 }
 
 export type QuickStatus = "quick_complete" | "quick_partial" | "upstream_partial";
@@ -82,6 +88,19 @@ export interface DeepHistory {
   error?: string;
   /** Provider failures behind an "error" stop. */
   failures?: ProviderFailure[];
+}
+
+export type CompletionStopReason = "quick_completion_end" | "quick_completion_budget" | "stalled" | "error";
+
+/** Pages fetched after QUICK's recent page to finish a short history (not DEEP: no DEEP state, no DEEP cap). */
+export interface CompletionResult {
+  txs: HistoryTx[];
+  /** The end of the history was really reached. */
+  reachedEnd: boolean;
+  stopReason: CompletionStopReason;
+  pages: number;
+  calls: number;
+  trace: TraceStep[];
 }
 
 export interface DeepOptions {
@@ -166,11 +185,11 @@ export class WalletHistoryService {
 
     const cached = this.cache.getOrigin(address);
     if (cached) {
-      origin = { found: !cached.empty, firstSeen: cached.firstSeen, signature: cached.signature, method: "cache", complete: true, reason: cached.empty ? "history_start_reached" : "found", signaturesScanned: 0 };
+      origin = { found: !cached.empty, firstSeen: cached.firstSeen, signature: cached.signature, method: "cache", complete: true, reason: cached.empty ? "history_start_reached" : "found", signaturesScanned: 0, totalSignatures: null };
     } else if (recentComplete) {
       // The recent page already holds the whole history: its oldest transaction is the origin, no extra call.
       const first = [...recent.txs].sort((a, b) => (a.slot ?? 0) - (b.slot ?? 0) || (a.time ?? 0) - (b.time ?? 0))[0];
-      origin = { found: !!first, firstSeen: first?.time ?? null, signature: first?.signature ?? null, method: "recent_page", complete: true, reason: first ? "found" : "history_start_reached", signaturesScanned: recent.stats.signaturesListed };
+      origin = { found: !!first, firstSeen: first?.time ?? null, signature: first?.signature ?? null, method: "recent_page", complete: true, reason: first ? "found" : "history_start_reached", signaturesScanned: recent.stats.signaturesListed, totalSignatures: recent.stats.signaturesListed };
     } else {
       try {
         originPage = await this.getOldestHistory(address);
@@ -180,7 +199,7 @@ export class WalletHistoryService {
       } catch (e) {
         const failures = e instanceof HistoryUnavailableError ? e.failures : [];
         trace.push({ phase: "origin", steps: failureTrace(failures) });
-        origin = { found: false, firstSeen: null, signature: null, method: "none", complete: false, reason: "error", signaturesScanned: 0 };
+        origin = { found: false, firstSeen: null, signature: null, method: "none", complete: false, reason: "error", signaturesScanned: 0, totalSignatures: null };
       }
     }
     if (origin.complete && origin.method !== "cache" && origin.method !== "none") {
@@ -188,6 +207,36 @@ export class WalletHistoryService {
     }
     const status: QuickStatus = origin.reason === "error" ? "upstream_partial" : origin.complete ? "quick_complete" : "quick_partial";
     return { address, status, recent: { page: recent, stats: recent.stats, complete: recentComplete }, origin, originPage, trace, calls };
+  }
+
+  /**
+   * QUICK completion: continue newest → oldest from the recent page's cursor
+   * until the end of the history or the (small) budget. Deterministic: at most
+   * `maxPages` pages and `maxTransactions` transactions.
+   */
+  async completeRecent(address: string, cursor: string, opts: { maxPages: number; maxTransactions: number; pageLimit: number }): Promise<CompletionResult> {
+    const txs: HistoryTx[] = [];
+    const trace: TraceStep[] = [];
+    let cur = cursor;
+    let pages = 0;
+    let calls = 0;
+    while (pages < opts.maxPages && txs.length < opts.maxTransactions) {
+      let page: ServicePage;
+      try {
+        page = await this.getHistoryPage(address, { order: "desc", cursor: cur, limit: Math.min(opts.pageLimit, opts.maxTransactions - txs.length) });
+      } catch (e) {
+        if (e instanceof HistoryUnavailableError) aggregate(trace, failureTrace(e.failures));
+        return { txs, reachedEnd: false, stopReason: "error", pages, calls, trace };
+      }
+      pages++;
+      calls += page.calls;
+      aggregate(trace, page.trace);
+      txs.push(...page.txs);
+      if (!page.nextCursor) return { txs, reachedEnd: true, stopReason: "quick_completion_end", pages, calls, trace };
+      if (page.nextCursor === cur) return { txs, reachedEnd: false, stopReason: "stalled", pages, calls, trace };
+      cur = page.nextCursor;
+    }
+    return { txs, reachedEnd: false, stopReason: "quick_completion_budget", pages, calls, trace };
   }
 
   /** DEEP: paginated history of a selected wallet, resumable. */
@@ -281,18 +330,21 @@ export class WalletHistoryService {
   }
 }
 
-/** Origin from an oldest-first page. */
+/** Origin from an oldest-first page. `signaturesScanned` = signatures listed by the walk, never the transactions decoded. */
 export function originFromPage(page: ServicePage): OriginResult {
   const method: OriginMethod = page.strategy === "helius_gtfa" ? "helius_primary_asc" : "signature_walk";
-  const scanned = page.stats.signaturesListed;
+  const scanned = page.walkedSignatures ?? page.stats.signaturesListed;
+  // A signature walk that reached the start listed the whole history: its size is exact.
+  const total = method === "signature_walk" && (page.originStatus === "reached" || (page.originStatus === undefined && page.reachedStart)) ? scanned : null;
+  const base = { method, signaturesScanned: scanned, totalSignatures: total };
   if (page.originStatus === "reached" || (page.originStatus === undefined && page.reachedStart)) {
     const first = page.txs.find((t) => t.time !== null) ?? page.txs[0];
-    if (first) return { found: true, firstSeen: first.time, signature: first.signature, method, complete: true, reason: "found", signaturesScanned: scanned };
-    return { found: false, firstSeen: null, signature: null, method, complete: true, reason: "history_start_reached", signaturesScanned: scanned };
+    if (first) return { ...base, found: true, firstSeen: first.time, signature: first.signature, complete: true, reason: "found" };
+    return { ...base, found: false, firstSeen: null, signature: null, complete: true, reason: "history_start_reached" };
   }
   const primaryDown = page.trace.some((s) => s.source === "helius_primary" && s.result !== "success" && s.result !== "skipped");
-  if (page.originStatus === "unsupported") return { found: false, firstSeen: null, signature: null, method, complete: false, reason: primaryDown ? "primary_unavailable" : "unsupported", signaturesScanned: scanned };
-  return { found: false, firstSeen: null, signature: null, method, complete: false, reason: "budget_exhausted", signaturesScanned: scanned };
+  if (page.originStatus === "unsupported") return { ...base, found: false, firstSeen: null, signature: null, complete: false, reason: primaryDown ? "primary_unavailable" : "unsupported" };
+  return { ...base, found: false, firstSeen: null, signature: null, complete: false, reason: "budget_exhausted" };
 }
 
 export type { CachedOrigin };

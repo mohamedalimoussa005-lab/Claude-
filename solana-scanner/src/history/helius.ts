@@ -180,7 +180,7 @@ export class HeliusHistoryProvider implements WalletHistoryProvider {
         transactionsNormalized: txs.length,
         missing: 0,
       },
-      ...(req.order === "asc" && !token ? { reachedStart: true, originStatus: "reached" as const } : {}),
+      ...(req.order === "asc" && !token ? { reachedStart: true, originStatus: "reached" as const, walkedSignatures: data.length } : {}),
     };
   }
 
@@ -220,6 +220,7 @@ export class HeliusHistoryProvider implements WalletHistoryProvider {
       missing: 0,
       reachedStart: false,
       originStatus,
+      walkedSignatures: signaturesListed,
       note,
       stats: { signaturesRequested: limit, signaturesListed, transactionsFetched: 0, transactionsFromCache: 0, transactionsSucceeded: null, transactionsFailed: null, transactionsNormalized: 0, missing: 0 },
     });
@@ -251,6 +252,7 @@ export class HeliusHistoryProvider implements WalletHistoryProvider {
       missing: d.missing,
       reachedStart: true,
       originStatus: "reached",
+      walkedSignatures: all.length,
       stats: { ...d.stats, signaturesRequested: limit },
     };
   }

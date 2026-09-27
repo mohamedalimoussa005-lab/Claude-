@@ -61,6 +61,7 @@ export class PublicRpcHistoryProvider implements WalletHistoryProvider {
       missing: 0,
       reachedStart: false,
       originStatus,
+      walkedSignatures: listed,
       note,
       stats: { signaturesRequested: limit, signaturesListed: listed, transactionsFetched: 0, transactionsFromCache: 0, transactionsSucceeded: null, transactionsFailed: null, transactionsNormalized: 0, missing: 0 },
     });
@@ -80,7 +81,7 @@ export class PublicRpcHistoryProvider implements WalletHistoryProvider {
     }
     if (!reached) return empty(all.length, "budget_exhausted", `start of history beyond ${all.length} signatures`);
     const d = await this.fetchAll(all.slice(-limit).reverse(), req, calls);
-    return { txs: d.txs, nextCursor: null, provider: "public_rpc", strategy: "public_rpc", calls: calls.n, missing: d.stats.missing, reachedStart: true, originStatus: "reached", stats: { ...d.stats, signaturesRequested: limit } };
+    return { txs: d.txs, nextCursor: null, provider: "public_rpc", strategy: "public_rpc", calls: calls.n, missing: d.stats.missing, reachedStart: true, originStatus: "reached", walkedSignatures: all.length, stats: { ...d.stats, signaturesRequested: limit } };
   }
 
   private async fetchAll(sigs: SignatureInfo[], req: PageRequest, calls: { n: number }): Promise<{ txs: HistoryTx[]; stats: PageStats }> {

@@ -347,3 +347,12 @@ Code : `src/rpc/serverRpc.ts` (Node uniquement ; jamais importé par `src/ui`). 
 | Bascule | au plus un fallback par opération (authentifié → public) ; circuit breaker par fournisseur : quota épuisé, 401 ou 403 → fournisseur indisponible pour l'exécution ; timeout / réseau → fallback pour cet appel seulement. `RunRpcGuard` reste au-dessus |
 | Diagnostics | `diagnostics.rpcProviders` (libellé, état, cause, compteurs) et `rpcFallbacks` ; jamais l'URL |
 | Algorithmes | Step 3 et Step 4 inchangés : seul le transport change (`getAccountInfo`, `getProgramAccounts`, `getMultipleAccounts`, `getSignaturesForAddress`, `getTransaction`, `getBalance`). La couche historique Helius Enhanced reste séparée |
+
+### Étape 4.2c : complétion QUICK et nombre de signatures
+
+| Point | Règle |
+|---|---|
+| Complétion QUICK | après QUICK, pour un historique **court** seulement (ce n'est pas DEEP : ni état DEEP, ni plafond DEEP). Origine non atteinte dans le budget (milliers de signatures) → jamais. Taille totale connue exactement (le parcours des signatures a atteint le début, ou la page récente couvre tout) → seulement si ≤ 300 signatures et si le reste tient dans 2 pages / 200 transactions. Taille inconnue → une seule page de sonde. Paramètres : `WALLET_CONFIG.historyLayer.quickCompletion` |
+| Complétude | `historyComplete` seulement si la fin de l'historique est réellement atteinte (`quick_completion_end`) ; budget atteint (`quick_completion_budget`) → incomplet, aucune métrique globale |
+| `origin.signaturesScanned` | signatures réellement listées par la recherche d'origine (échouées comprises), jamais les transactions décodées ; `origin.totalSignatures` = taille exacte quand le début a été atteint |
+| Borne inférieure | `signatureCount` ≥ signatures parcourues (5 000, 10 000…) ; alimente le flag existant « bot / haute fréquence » sans changer son seuil ni sa pénalité |

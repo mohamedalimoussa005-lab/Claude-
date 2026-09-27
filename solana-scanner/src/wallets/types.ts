@@ -31,12 +31,14 @@ export interface WalletFailure {
 export interface HistoryExtras {
   mode: "quick" | "deep";
   /** Why the history is (in)complete. */
-  completeness: "recent_page_covers_history" | "deep_complete" | "incomplete";
+  completeness: "recent_page_covers_history" | "quick_completion_complete" | "deep_complete" | "incomplete";
   /** signatureCount is a lower bound (the history was not fully listed). */
   signatureCountIsLowerBound: boolean;
   origin: OriginResult;
   bot: BotSignals;
   transfers: TokenTransfer[];
+  /** QUICK completion (step 4.2c): a few pages after QUICK for a short history. Not DEEP. */
+  quickCompletion: { attempted: boolean; skippedReason: string | null; stopReason: string | null; pages: number };
   deep: { attempted: boolean; skippedReason: string | null; stopReason: string | null };
   providerTrace: { phase: string; steps: TraceStep[] }[];
   /** UNKNOWN / NOT VERIFIED items (never turned into negative signals). */

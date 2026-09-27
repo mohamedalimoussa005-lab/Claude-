@@ -446,7 +446,7 @@ test("QUICK like D12R: PRIMARY 403 → enhanced; 100 listed / 67 succeeded; orig
       { phase: "origin", steps: [{ source: "helius_primary", result: "disabled", cause: "forbidden" }, { source: "helius_enhanced", result: "success" }] },
     ]);
     assert.deepEqual(r.json.recent, { signaturesRequested: 100, signaturesListed: 100, transactionsFetched: 67, transactionsFromCache: 0, transactionsSucceeded: 67, transactionsFailed: 33, transactionsNormalized: 67, missing: 0 });
-    assert.deepEqual(r.json.origin, { found: false, firstSeen: null, signature: null, method: "signature_walk", complete: false, reason: "budget_exhausted", signaturesScanned: 10_000 });
+    assert.deepEqual(r.json.origin, { found: false, firstSeen: null, signature: null, method: "signature_walk", complete: false, reason: "budget_exhausted", signaturesScanned: 10_000, totalSignatures: null });
     assert.deepEqual(r.json.completeness, { recentComplete: false, originComplete: false, historyComplete: false });
     assert.equal(r.json.stopReason, "quick_budget");
     assert.equal(r.json.transactionCount, 67);

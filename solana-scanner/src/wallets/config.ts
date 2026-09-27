@@ -77,6 +77,23 @@ export interface WalletConfig {
     distributionRecipientsChecked: number;
     /** A first transaction bringing at least this much SOL counts as funding. */
     minFundingSol: number;
+    /**
+     * QUICK completion (not DEEP): finish a SHORT history right after QUICK.
+     *   - total size known (signature walk reached the start): only if it is
+     *     at most `maxKnownSignatures` and fits in `maxAdditionalPages`;
+     *   - total size unknown: a single probe page (`probePages`);
+     *   - start not reached within the origin budget (thousands of
+     *     signatures): never.
+     * Complete only if the end of the history is really reached.
+     */
+    quickCompletion: {
+      enabled: boolean;
+      maxAdditionalPages: number;
+      maxAdditionalTransactions: number;
+      maxKnownSignatures: number;
+      probePages: number;
+      pageLimit: number;
+    };
   };
   quality: {
     /** Closed or valued positions in the reconstructed history → points. */
@@ -137,6 +154,14 @@ export const WALLET_CONFIG: WalletConfig = {
     deepMaxTransactions: 2000,
     distributionRecipientsChecked: 5,
     minFundingSol: 0.01,
+    quickCompletion: {
+      enabled: true,
+      maxAdditionalPages: 2,
+      maxAdditionalTransactions: 200,
+      maxKnownSignatures: 300,
+      probePages: 1,
+      pageLimit: 100,
+    },
   },
   quality: {
     sampleSize: {

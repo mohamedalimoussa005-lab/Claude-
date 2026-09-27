@@ -590,7 +590,8 @@ test("origin via fallback on a small wallet: signature walk reaches the start", 
   const fake = fakeHelius({ gtfa: () => ({ status: 403, body: {} }), signatures: sigHandler(sigs), enhanced: enhancedBuys });
   const svc = new WalletHistoryService({ providers: [helius(fake)], config: CONFIG });
   const q = await svc.quick(W);
-  assert.deepEqual({ found: q.origin.found, signature: q.origin.signature, method: q.origin.method, complete: q.origin.complete, reason: q.origin.reason, scanned: q.origin.signaturesScanned }, { found: true, signature: "f1", method: "signature_walk", complete: true, reason: "found", scanned: 20 });
+  assert.deepEqual({ found: q.origin.found, signature: q.origin.signature, method: q.origin.method, complete: q.origin.complete, reason: q.origin.reason, scanned: q.origin.signaturesScanned }, { found: true, signature: "f1", method: "signature_walk", complete: true, reason: "found", scanned: 1500 });
+  assert.equal(q.origin.totalSignatures, 1500, "the walk listed the whole history: its size is exact (not the 20 decoded)");
   assert.equal(q.origin.firstSeen, (T0 + 1) * 1000);
   assert.equal(q.status, "quick_complete");
   assert.deepEqual(q.trace[1], { phase: "origin", steps: [{ source: "helius_primary", result: "disabled", cause: "forbidden" }, { source: "helius_enhanced", result: "success" }] });
