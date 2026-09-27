@@ -2,7 +2,8 @@
  * Public RPC wallet-history provider: wraps the existing read-only SolanaRpc
  * (getSignaturesForAddress + getTransaction, ≈ 1 transaction/s). Pages are
  * small; oldest-first is only possible when the signature walk reaches the
- * start of the history within its budget.
+ * start of the history within its budget. Failed transactions are counted,
+ * never returned.
  */
 
 import type { SignatureInfo, SolanaRpc } from "../onchain/rpc.ts";
@@ -10,7 +11,8 @@ import { HISTORY_CONFIG } from "./config.ts";
 import type { HistoryConfig } from "./config.ts";
 import { decodeCursor, encodeCursor } from "./cursor.ts";
 import { normalizeParsed } from "./normalize.ts";
-import type { HistoryPage, HistoryTx, PageRequest, WalletHistoryProvider } from "./types.ts";
+import { ProviderUnavailableError, traceResult } from "./provider.ts";
+import type { HistoryPage, HistoryTx, OriginStatus, PageRequest, PageStats, WalletHistoryProvider } from "./types.ts";
 
 export type HistoryRpc = Pick<SolanaRpc, "getSignatures" | "getTransaction">;
 
@@ -25,23 +27,42 @@ export class PublicRpcHistoryProvider implements WalletHistoryProvider {
   }
 
   async getPage(req: PageRequest): Promise<HistoryPage> {
-    return req.order === "asc" ? this.oldest(req) : this.newest(req);
+    try {
+      const page = req.order === "asc" ? await this.oldest(req) : await this.newest(req);
+      return { ...page, trace: [{ source: "public_rpc", result: "success" }] };
+    } catch (e) {
+      const kind = (e as { kind?: string }).kind;
+      throw new ProviderUnavailableError("public_rpc", kind ?? "unknown", e instanceof Error ? e.message : String(e), [{ source: "public_rpc", result: traceResult(kind) }]);
+    }
   }
 
-  private async newest(req: PageRequest): Promise<HistoryPage> {
+  private async newest(req: PageRequest): Promise<Omit<HistoryPage, "trace">> {
     const cur = decodeCursor(req.cursor);
     const before = cur?.kind === "sig" ? cur.value : undefined;
     const limit = Math.max(1, Math.min(req.limit, this.config.maxPageLimit));
     const calls = { n: 1 };
     const sigs = await this.rpc.getSignatures(req.address, limit, before);
-    const { txs, missing } = await this.fetchAll(sigs, req, calls);
+    const d = await this.fetchAll(sigs, req, calls);
     const next = sigs.length === limit ? encodeCursor({ kind: "sig", value: sigs[sigs.length - 1].signature }) : null;
-    return { txs, nextCursor: next, provider: "public_rpc", strategy: "public_rpc", calls: calls.n, missing, ...(cur?.kind === "gtfa" ? { restarted: true } : {}) };
+    return { txs: d.txs, nextCursor: next, provider: "public_rpc", strategy: "public_rpc", calls: calls.n, missing: d.stats.missing, stats: { ...d.stats, signaturesRequested: limit }, ...(cur?.kind === "gtfa" ? { restarted: true } : {}) };
   }
 
-  private async oldest(req: PageRequest): Promise<HistoryPage> {
+  private async oldest(req: PageRequest): Promise<Omit<HistoryPage, "trace">> {
     const calls = { n: 0 };
-    if (req.cursor) return { txs: [], nextCursor: null, provider: "public_rpc", strategy: "public_rpc", calls: 0, missing: 0, reachedStart: false, note: "oldest-first paging beyond the first page is not available on the public RPC" };
+    const limit = Math.max(1, Math.min(req.limit, this.config.maxPageLimit));
+    const empty = (listed: number, originStatus: OriginStatus, note: string): Omit<HistoryPage, "trace"> => ({
+      txs: [],
+      nextCursor: null,
+      provider: "public_rpc",
+      strategy: "public_rpc",
+      calls: calls.n,
+      missing: 0,
+      reachedStart: false,
+      originStatus,
+      note,
+      stats: { signaturesRequested: limit, signaturesListed: listed, transactionsFetched: 0, transactionsFromCache: 0, transactionsSucceeded: null, transactionsFailed: null, transactionsNormalized: 0, missing: 0 },
+    });
+    if (req.cursor) return empty(0, "unsupported", "oldest-first paging beyond the first page is not available on the public RPC");
     const all: SignatureInfo[] = [];
     let before: string | undefined;
     let reached = false;
@@ -55,20 +76,26 @@ export class PublicRpcHistoryProvider implements WalletHistoryProvider {
       }
       before = page[page.length - 1].signature;
     }
-    if (!reached) return { txs: [], nextCursor: null, provider: "public_rpc", strategy: "public_rpc", calls: calls.n, missing: 0, reachedStart: false, note: `start of history beyond ${all.length} signatures` };
-    const oldest = all.slice(-Math.max(1, Math.min(req.limit, this.config.maxPageLimit))).reverse();
-    const { txs, missing } = await this.fetchAll(oldest, req, calls);
-    return { txs, nextCursor: null, provider: "public_rpc", strategy: "public_rpc", calls: calls.n, missing, reachedStart: true };
+    if (!reached) return empty(all.length, "budget_exhausted", `start of history beyond ${all.length} signatures`);
+    const d = await this.fetchAll(all.slice(-limit).reverse(), req, calls);
+    return { txs: d.txs, nextCursor: null, provider: "public_rpc", strategy: "public_rpc", calls: calls.n, missing: d.stats.missing, reachedStart: true, originStatus: "reached", stats: { ...d.stats, signaturesRequested: limit } };
   }
 
-  private async fetchAll(sigs: SignatureInfo[], req: PageRequest, calls: { n: number }): Promise<{ txs: HistoryTx[]; missing: number }> {
+  private async fetchAll(sigs: SignatureInfo[], req: PageRequest, calls: { n: number }): Promise<{ txs: HistoryTx[]; stats: PageStats }> {
     const txs: HistoryTx[] = [];
     let missing = 0;
+    let failed = 0;
+    let fetched = 0;
+    let fromCache = 0;
     for (const s of sigs) {
-      if (s.err) continue;
+      if (s.err) {
+        failed++;
+        continue;
+      }
       const hit = req.cached?.(s.signature);
       if (hit) {
         txs.push(hit);
+        fromCache++;
         continue;
       }
       calls.n++;
@@ -77,8 +104,26 @@ export class PublicRpcHistoryProvider implements WalletHistoryProvider {
         missing++;
         continue;
       }
-      txs.push(normalizeParsed(tx, "public-rpc"));
+      fetched++;
+      const n = normalizeParsed(tx, "public-rpc");
+      if (n.failed) {
+        failed++;
+        continue;
+      }
+      txs.push(n);
     }
-    return { txs, missing };
+    return {
+      txs,
+      stats: {
+        signaturesRequested: sigs.length,
+        signaturesListed: sigs.length,
+        transactionsFetched: fetched,
+        transactionsFromCache: fromCache,
+        transactionsSucceeded: sigs.length - failed,
+        transactionsFailed: failed,
+        transactionsNormalized: txs.length,
+        missing,
+      },
+    };
   }
 }

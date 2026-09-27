@@ -61,7 +61,8 @@ function memoryProvider(txs: ParsedTransaction[], hold?: () => Promise<void>) {
       const start = req.cursor ? list.findIndex((t) => `sig:${t.signature}` === req.cursor) + 1 : 0;
       const page = list.slice(start, start + req.limit);
       const next = start + req.limit < list.length ? `sig:${page[page.length - 1].signature}` : null;
-      return { txs: page, nextCursor: req.order === "asc" ? null : next, provider: "public_rpc", strategy: "public_rpc", calls: 1, missing: 0, ...(req.order === "asc" ? { reachedStart: true } : {}) };
+      const pageStats = { signaturesRequested: req.limit, signaturesListed: page.length, transactionsFetched: page.length, transactionsFromCache: 0, transactionsSucceeded: page.length, transactionsFailed: 0, transactionsNormalized: page.length, missing: 0 };
+      return { txs: page, nextCursor: req.order === "asc" ? null : next, provider: "public_rpc", strategy: "public_rpc", calls: 1, missing: 0, stats: pageStats, trace: [{ source: "public_rpc", result: "success" }], ...(req.order === "asc" ? { reachedStart: true, originStatus: "reached" as const } : {}) };
     },
   };
   return { provider, stats };
@@ -69,15 +70,19 @@ function memoryProvider(txs: ParsedTransaction[], hold?: () => Promise<void>) {
 
 type Reply = { status: number; body: unknown };
 /** Offline Helius endpoint. */
-function fakeHeliusFetch(h: { gtfa: (p: Record<string, unknown>) => Reply; signatures?: () => Reply }) {
+function fakeHeliusFetch(h: { gtfa: (p: Record<string, unknown>) => Reply; signatures?: (p: Record<string, unknown>) => Reply; enhanced?: (sigs: string[]) => Reply }) {
   const tokens: unknown[] = [];
-  const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body));
     let r: Reply;
+    if (String(input).includes("/v0/transactions")) {
+      const e = h.enhanced ? h.enhanced(body.transactions) : { status: 500, body: {} };
+      return new Response(JSON.stringify(e.body), { status: e.status });
+    }
     if (body.method === "getTransactionsForAddress") {
       tokens.push(body.params[1].paginationToken);
       r = h.gtfa(body.params[1]);
-    } else r = h.signatures ? h.signatures() : { status: 500, body: {} };
+    } else r = h.signatures ? h.signatures(body.params[1] ?? {}) : { status: 500, body: {} };
     const payload = r.status === 200 ? { jsonrpc: "2.0", id: body.id, result: r.body } : r.body;
     return new Response(JSON.stringify(payload), { status: r.status });
   }) as typeof fetch;
@@ -159,13 +164,18 @@ test("QUICK: recent + oldest pages, origin, normalized transactions only", async
     const r = await get(s.port, q(W, "quick"));
     assert.equal(r.status, 200);
     assert.equal(r.headers["cache-control"], "no-store");
-    assert.deepEqual(Object.keys(r.json).sort(), ["address", "complete", "mode", "origin", "pagination", "provider", "providers", "resumable", "stopReason", "transactionCount", "transactions", "truncated", "warnings"]);
+    assert.deepEqual(Object.keys(r.json).sort(), ["address", "completeness", "mode", "origin", "pagination", "provider", "providerTrace", "providers", "recent", "resumable", "status", "stopReason", "transactionCount", "transactions", "truncated", "warnings"]);
     assert.equal(r.json.mode, "quick");
+    assert.equal(r.json.status, "quick_complete");
     assert.equal(r.json.provider, "public_rpc");
     assert.equal(r.json.transactionCount, 120);
-    assert.equal(r.json.complete, false);
+    assert.deepEqual(r.json.completeness, { recentComplete: false, originComplete: true, historyComplete: false });
+    assert.equal(r.json.stopReason, "quick_budget");
     assert.equal(r.json.resumable, false);
-    assert.deepEqual(r.json.origin, { firstSeen: (T0 + 1) * 1000, reachedStart: true });
+    const origin = r.json.origin as Record<string, unknown>;
+    assert.equal(origin.found, true);
+    assert.equal(origin.firstSeen, (T0 + 1) * 1000);
+    assert.equal(origin.reason, "found");
     const tx = (r.json.transactions as Record<string, unknown>[])[0];
     assert.equal(tx.signature, "s300");
     assert.ok("tokenDeltas" in tx && "lamportDeltas" in tx);
@@ -180,7 +190,8 @@ test("DEEP with the server token: paginated, complete, not resumable", async () 
   try {
     const r = await get(s.port, q(W, "deep"), auth);
     assert.equal(r.status, 200);
-    assert.equal(r.json.complete, true);
+    assert.equal(r.json.status, "deep_complete");
+    assert.deepEqual(r.json.completeness, { recentComplete: true, originComplete: true, historyComplete: true });
     assert.equal(r.json.resumable, false);
     assert.equal(r.json.stopReason, "end_of_history");
     assert.equal(r.json.transactionCount, 250);
@@ -340,7 +351,7 @@ test("snapshot persistence: DEEP resumes after a backend restart; the snapshot h
     const f1 = fakeHeliusFetch({ gtfa: gtfaOver(txs) });
     const a = await start({ providers: [heliusProvider(f1.fetchImpl)], store: new FileSnapshotStore(file), deepToken: DEEP_TOKEN, config: oneBudget });
     const r1 = await get(a.port, q(W, "deep"), auth);
-    assert.equal(r1.json.complete, false);
+    assert.equal(r1.json.status, "deep_partial");
     assert.equal(r1.json.resumable, true);
     assert.equal(r1.json.stopReason, "max_pages");
     await a.app.flush();
@@ -356,7 +367,7 @@ test("snapshot persistence: DEEP resumes after a backend restart; the snapshot h
     const r3 = await get(b.port, q(W, "deep"), auth);
     assert.deepEqual(f2.tokens, ["100", "200"], "resumed from the saved cursor, page 1 not re-downloaded");
     assert.equal(r2.json.transactionCount, 200);
-    assert.equal(r3.json.complete, true);
+    assert.equal(r3.json.status, "deep_complete");
     assert.equal(r3.json.transactionCount, 250);
     await b.app.flush();
     await b.close();
@@ -401,5 +412,65 @@ test("frontend: no import of the server or the Helius provider, /api proxied to 
   for (const f of walk(dist)) {
     const text = readFileSync(f, "utf8");
     for (const bad of ["HELIUS_API_KEY", "helius-rpc.com", "api-key=", "WALLET_HISTORY_DEEP_TOKEN", "HeliusHistoryProvider"]) assert.ok(!text.includes(bad), `${bad} in ${f}`);
+  }
+});
+
+// ─── 4.1b: D12R-like QUICK through the API ───────────────────────────────
+
+test("QUICK like D12R: PRIMARY 403 → enhanced; 100 listed / 67 succeeded; origin budget_exhausted; trace codes only; nothing sensitive", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "wh-"));
+  const file = join(dir, "wallet-history.json");
+  const upstream = `This endpoint is restricted on your current plan https://mainnet.helius-rpc.com/?api-key=${KEY}`;
+  const fake = fakeHeliusFetch({
+    gtfa: () => ({ status: 403, body: { error: upstream } }),
+    // Endless history (> 10,000 signatures); among the newest 100, 33 failed.
+    signatures: (p) => {
+      const from = p.before ? Number(String(p.before).slice(1)) - 1 : 50_000;
+      return { status: 200, body: Array.from({ length: Number(p.limit) }, (_, k) => ({ signature: `f${from - k}`, slot: from - k, blockTime: T0 + from - k, err: from - k > 49_901 && (from - k) % 3 === 0 ? { InstructionError: [0, "x"] } : null })) };
+    },
+    enhanced: (list) => ({
+      status: 200,
+      body: list.map((sig) => ({ signature: sig, slot: Number(sig.slice(1)), timestamp: T0 + Number(sig.slice(1)), fee: 5000, feePayer: W, type: "SWAP", source: "PUMP_FUN", transactionError: null, accountData: [{ account: W, nativeBalanceChange: -1e8, tokenBalanceChanges: [{ userAccount: W, mint: MINT, rawTokenAmount: { tokenAmount: "1000000", decimals: 6 } }] }, { account: CURVE, nativeBalanceChange: 1e8, tokenBalanceChanges: [] }], instructions: [{ programId: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" }] })),
+    }),
+  });
+  const logs: string[] = [];
+  try {
+    const s = await start({ providers: [heliusProvider(fake.fetchImpl)], store: new FileSnapshotStore(file), log: (e) => logs.push(JSON.stringify(e)) });
+    const r = await get(s.port, q(W, "quick"));
+    await s.app.flush();
+    await s.close();
+    assert.equal(r.status, 200);
+    assert.equal(r.json.status, "quick_partial");
+    assert.deepEqual(r.json.providerTrace, [
+      { phase: "recent", steps: [{ source: "helius_primary", result: "forbidden" }, { source: "helius_enhanced", result: "success" }] },
+      { phase: "origin", steps: [{ source: "helius_primary", result: "disabled", cause: "forbidden" }, { source: "helius_enhanced", result: "success" }] },
+    ]);
+    assert.deepEqual(r.json.recent, { signaturesRequested: 100, signaturesListed: 100, transactionsFetched: 67, transactionsFromCache: 0, transactionsSucceeded: 67, transactionsFailed: 33, transactionsNormalized: 67, missing: 0 });
+    assert.deepEqual(r.json.origin, { found: false, firstSeen: null, signature: null, method: "signature_walk", complete: false, reason: "budget_exhausted", signaturesScanned: 10_000 });
+    assert.deepEqual(r.json.completeness, { recentComplete: false, originComplete: false, historyComplete: false });
+    assert.equal(r.json.stopReason, "quick_budget");
+    assert.equal(r.json.transactionCount, 67);
+    assert.deepEqual(r.json.warnings, [], "Helius answered (through its fallback): no provider-level failure");
+    const snapshot = readFileSync(file, "utf8");
+    for (const surface of [r.text, snapshot, logs.join("\n")]) {
+      for (const bad of [KEY, "api-key", "helius-rpc.com", "restricted", "current plan", "stack", "authorization"]) assert.ok(!surface.includes(bad), `${bad} leaked`);
+    }
+    assert.ok(logs.some((l) => l.includes("helius_primary:forbidden>helius_enhanced:success")), "server log carries the trace codes");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("502 carries status failed and the trace codes, never the upstream message", async () => {
+  const fake = fakeHeliusFetch({ gtfa: () => ({ status: 429, body: { error: `slow down ${KEY}` } }), signatures: () => ({ status: 403, body: { error: "restricted https://mainnet.helius-rpc.com" } }) });
+  const s = await start({ providers: [heliusProvider(fake.fetchImpl)] });
+  try {
+    const r = await get(s.port, q(W, "quick"));
+    assert.equal(r.status, 502);
+    assert.equal(r.json.status, "failed");
+    assert.deepEqual(r.json.providerTrace, [{ phase: "recent", steps: [{ source: "helius_primary", result: "rate_limited" }, { source: "helius_enhanced", result: "forbidden" }] }]);
+    for (const bad of [KEY, "helius-rpc.com", "restricted", "slow down"]) assert.ok(!r.text.includes(bad));
+  } finally {
+    await s.close();
   }
 });

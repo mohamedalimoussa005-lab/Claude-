@@ -26,8 +26,8 @@ import type { HistoryConfig } from "./config.ts";
 import { decodeCursor, encodeCursor } from "./cursor.ts";
 import { normalizeEnhanced, normalizeParsed } from "./normalize.ts";
 import type { EnhancedTransaction } from "./normalize.ts";
-import { assertServerSide, ProviderUnavailableError } from "./provider.ts";
-import type { HistoryLogEntry, HistoryPage, HistoryStrategy, HistoryTx, PageRequest, WalletHistoryProvider } from "./types.ts";
+import { assertServerSide, ProviderUnavailableError, traceResult } from "./provider.ts";
+import type { HistoryLogEntry, HistoryPage, HistoryStrategy, HistoryTx, PageRequest, PageStats, TraceStep, WalletHistoryProvider } from "./types.ts";
 
 export type HeliusErrorKind = "auth" | "forbidden" | "unavailable" | "rate_limit" | "http" | "network" | "timeout" | "rpc" | "parse";
 
@@ -102,36 +102,49 @@ export class HeliusHistoryProvider implements WalletHistoryProvider {
 
   async getPage(req: PageRequest): Promise<HistoryPage> {
     const cur = decodeCursor(req.cursor);
+    const trace: TraceStep[] = [];
     let fallbackNote: string | undefined;
-    if (!this.#primaryDisabled && (cur === null || cur.kind === "gtfa")) {
+    if (this.#primaryDisabled) {
+      trace.push({ source: "helius_primary", result: "disabled", cause: traceResult(this.#primaryDisabled) });
+    } else if (cur?.kind === "sig") {
+      trace.push({ source: "helius_primary", result: "skipped" });
+    } else {
       try {
-        return await this.#primaryPage(req, cur?.value ?? null);
+        const page = await this.#primaryPage(req, cur?.value ?? null);
+        trace.push({ source: "helius_primary", result: "success" });
+        return { ...page, trace };
       } catch (e) {
         if (!(e instanceof HeliusError)) throw e;
-        if (e.kind === "auth") throw new ProviderUnavailableError("helius", "auth", e.message);
+        trace.push({ source: "helius_primary", result: traceResult(e.kind) });
+        if (e.kind === "auth") throw new ProviderUnavailableError("helius", "auth", e.message, trace);
         if (e.kind === "forbidden" || e.kind === "unavailable") this.#primaryDisabled = e.kind;
-        else if (e.kind !== "rate_limit") throw new ProviderUnavailableError("helius", e.kind, e.message);
+        else if (e.kind !== "rate_limit") throw new ProviderUnavailableError("helius", e.kind, e.message, trace);
         fallbackNote = `getTransactionsForAddress ${e.kind}${e.status ? ` (${e.status})` : ""} → fallback`;
         this.#log("helius_gtfa", "getTransactionsForAddress", 0, e.status, "fallback", fallbackNote);
       }
     }
     try {
       const page = req.order === "asc" ? await this.#fallbackOldest(req) : await this.#fallbackPage(req, cur?.kind === "sig" ? cur.value : null, cur?.kind === "gtfa");
+      trace.push({ source: "helius_enhanced", result: "success" });
       if (fallbackNote) page.note = page.note ? `${fallbackNote}; ${page.note}` : fallbackNote;
-      return page;
+      return { ...page, trace };
     } catch (e) {
-      if (e instanceof HeliusError) throw new ProviderUnavailableError("helius", e.kind, e.message);
+      if (e instanceof HeliusError) {
+        trace.push({ source: "helius_enhanced", result: traceResult(e.kind) });
+        throw new ProviderUnavailableError("helius", e.kind, e.message, trace);
+      }
       throw e;
     }
   }
 
   // ─── PRIMARY ──────────────────────────────────────────────────────────────
 
-  async #primaryPage(req: PageRequest, token: string | null): Promise<HistoryPage> {
+  async #primaryPage(req: PageRequest, token: string | null): Promise<Omit<HistoryPage, "trace">> {
+    const limit = Math.max(1, Math.min(req.limit, this.#config.maxPrimaryLimit));
     const params: Record<string, unknown> = {
       transactionDetails: "full",
       sortOrder: req.order,
-      limit: Math.max(1, Math.min(req.limit, this.#config.maxPrimaryLimit)),
+      limit,
       encoding: "jsonParsed",
       maxSupportedTransactionVersion: 0,
       commitment: "finalized",
@@ -140,31 +153,77 @@ export class HeliusHistoryProvider implements WalletHistoryProvider {
     if (token) params.paginationToken = token;
     const calls = { n: 0 };
     const result = (await this.#rpc("helius_gtfa", "getTransactionsForAddress", [req.address, params], calls)) as { data?: GtfaItem[]; paginationToken?: string | null } | null;
+    if (result !== null && typeof result === "object" && result.data !== undefined && !Array.isArray(result.data)) {
+      throw new HeliusError("parse", "getTransactionsForAddress", "unexpected getTransactionsForAddress payload");
+    }
     const data = result?.data ?? [];
-    const txs: HistoryTx[] = data.map((d) => normalizeParsed({ slot: d.slot, blockTime: d.blockTime ?? null, transaction: d.transaction, meta: d.meta }, "helius-gtfa"));
+    const all = data.map((d) => normalizeParsed({ slot: d.slot, blockTime: d.blockTime ?? null, transaction: d.transaction, meta: d.meta }, "helius-gtfa"));
+    const failed = all.filter((t) => t.failed).length;
+    const txs: HistoryTx[] = all.filter((t) => !t.failed);
     const next = result?.paginationToken && data.length > 0 ? encodeCursor({ kind: "gtfa", value: result.paginationToken }) : null;
-    return { txs, nextCursor: next, provider: "helius", strategy: "helius_gtfa", calls: calls.n, missing: 0, ...(req.order === "asc" && !token ? { reachedStart: true } : {}) };
+    const filtered = this.#config.status === "succeeded";
+    return {
+      txs,
+      nextCursor: next,
+      provider: "helius",
+      strategy: "helius_gtfa",
+      calls: calls.n,
+      missing: 0,
+      stats: {
+        signaturesRequested: limit,
+        signaturesListed: data.length,
+        transactionsFetched: data.length,
+        transactionsFromCache: 0,
+        transactionsSucceeded: txs.length,
+        // With filters.status = "succeeded", failed ones are dropped server-side: their number is unknown.
+        transactionsFailed: filtered ? null : failed,
+        transactionsNormalized: txs.length,
+        missing: 0,
+      },
+      ...(req.order === "asc" && !token ? { reachedStart: true, originStatus: "reached" as const } : {}),
+    };
   }
 
   // ─── FALLBACK ─────────────────────────────────────────────────────────────
 
-  async #fallbackPage(req: PageRequest, before: string | null, restarted: boolean): Promise<HistoryPage> {
+  async #fallbackPage(req: PageRequest, before: string | null, restarted: boolean): Promise<Omit<HistoryPage, "trace">> {
     const calls = { n: 0 };
     const limit = Math.max(1, Math.min(req.limit, 1000));
     const opts: Record<string, unknown> = { limit, commitment: "finalized" };
     if (before) opts.before = before;
     const sigs = (await this.#rpc("helius_signatures_enhanced", "getSignaturesForAddress", [req.address, opts], calls)) as SignatureInfo[];
-    const { txs, missing } = await this.#decode(sigs, req, calls);
+    if (!Array.isArray(sigs)) throw new HeliusError("parse", "getSignaturesForAddress", "unexpected signatures payload");
+    const d = await this.#decode(sigs, req, calls);
     const next = sigs.length === limit ? encodeCursor({ kind: "sig", value: sigs[sigs.length - 1].signature }) : null;
-    return { txs, nextCursor: next, provider: "helius", strategy: "helius_signatures_enhanced", calls: calls.n, missing, ...(restarted ? { restarted: true, note: "cursor from getTransactionsForAddress: restarted from the newest transaction" } : {}) };
+    return {
+      txs: d.txs,
+      nextCursor: next,
+      provider: "helius",
+      strategy: "helius_signatures_enhanced",
+      calls: calls.n,
+      missing: d.missing,
+      stats: { ...d.stats, signaturesRequested: limit },
+      ...(restarted ? { restarted: true, note: "cursor from getTransactionsForAddress: restarted from the newest transaction" } : {}),
+    };
   }
 
   /** Oldest transactions: walk signature pages to the end (bounded), first page only. */
-  async #fallbackOldest(req: PageRequest): Promise<HistoryPage> {
+  async #fallbackOldest(req: PageRequest): Promise<Omit<HistoryPage, "trace">> {
     const calls = { n: 0 };
-    if (req.cursor) {
-      return { txs: [], nextCursor: null, provider: "helius", strategy: "helius_signatures_enhanced", calls: 0, missing: 0, reachedStart: false, note: "oldest-first paging beyond the first page needs getTransactionsForAddress" };
-    }
+    const limit = Math.max(1, req.limit);
+    const empty = (signaturesListed: number, originStatus: "budget_exhausted" | "unsupported", note: string): Omit<HistoryPage, "trace"> => ({
+      txs: [],
+      nextCursor: null,
+      provider: "helius",
+      strategy: "helius_signatures_enhanced",
+      calls: calls.n,
+      missing: 0,
+      reachedStart: false,
+      originStatus,
+      note,
+      stats: { signaturesRequested: limit, signaturesListed, transactionsFetched: 0, transactionsFromCache: 0, transactionsSucceeded: null, transactionsFailed: null, transactionsNormalized: 0, missing: 0 },
+    });
+    if (req.cursor) return empty(0, "unsupported", "oldest-first paging beyond the first page needs getTransactionsForAddress");
     const all: SignatureInfo[] = [];
     let before: string | undefined;
     let reached = false;
@@ -172,6 +231,7 @@ export class HeliusHistoryProvider implements WalletHistoryProvider {
       const opts: Record<string, unknown> = { limit: 1000, commitment: "finalized" };
       if (before) opts.before = before;
       const page = (await this.#rpc("helius_signatures_enhanced", "getSignaturesForAddress", [req.address, opts], calls)) as SignatureInfo[];
+      if (!Array.isArray(page)) throw new HeliusError("parse", "getSignaturesForAddress", "unexpected signatures payload");
       all.push(...page);
       if (page.length < 1000) {
         reached = true;
@@ -179,42 +239,74 @@ export class HeliusHistoryProvider implements WalletHistoryProvider {
       }
       before = page[page.length - 1].signature;
     }
-    if (!reached) {
-      return { txs: [], nextCursor: null, provider: "helius", strategy: "helius_signatures_enhanced", calls: calls.n, missing: 0, reachedStart: false, note: `start of history beyond ${all.length} signatures` };
-    }
-    const oldest = all.slice(-Math.max(1, req.limit)).reverse();
-    const { txs, missing } = await this.#decode(oldest, req, calls);
-    return { txs, nextCursor: null, provider: "helius", strategy: "helius_signatures_enhanced", calls: calls.n, missing, reachedStart: true };
+    if (!reached) return empty(all.length, "budget_exhausted", `start of history beyond ${all.length} signatures`);
+    const oldest = all.slice(-limit).reverse();
+    const d = await this.#decode(oldest, req, calls);
+    return {
+      txs: d.txs,
+      nextCursor: null,
+      provider: "helius",
+      strategy: "helius_signatures_enhanced",
+      calls: calls.n,
+      missing: d.missing,
+      reachedStart: true,
+      originStatus: "reached",
+      stats: { ...d.stats, signaturesRequested: limit },
+    };
   }
 
-  /** Enhanced decoding of listed signatures, keeping their order and skipping cached ones. */
-  async #decode(sigs: SignatureInfo[], req: PageRequest, calls: { n: number }): Promise<{ txs: HistoryTx[]; missing: number }> {
+  /** Enhanced decoding of listed signatures, keeping their order and skipping cached and failed ones. */
+  async #decode(sigs: SignatureInfo[], req: PageRequest, calls: { n: number }): Promise<{ txs: HistoryTx[]; missing: number; stats: PageStats }> {
     const wanted = sigs.filter((s) => this.#config.status === "any" || !s.err);
+    const failed = sigs.filter((s) => !!s.err).length;
     const found = new Map<string, HistoryTx>();
     const toFetch: string[] = [];
+    let fromCache = 0;
     for (const s of wanted) {
       const hit = req.cached?.(s.signature);
-      if (hit) found.set(s.signature, hit);
-      else toFetch.push(s.signature);
+      if (hit) {
+        found.set(s.signature, hit);
+        fromCache++;
+      } else toFetch.push(s.signature);
     }
+    let fetched = 0;
     for (let i = 0; i < toFetch.length; i += this.#config.enhancedBatch) {
       const batch = toFetch.slice(i, i + this.#config.enhancedBatch);
       const res = (await this.#post("helius_signatures_enhanced", "enhancedTransactions", this.#config.enhancedUrl, { transactions: batch }, calls)) as EnhancedTransaction[] | null;
-      for (const e of res ?? []) if (e && e.signature) found.set(e.signature, normalizeEnhanced(e));
+      if (res !== null && !Array.isArray(res)) throw new HeliusError("parse", "enhancedTransactions", "unexpected enhanced payload");
+      for (const e of res ?? []) {
+        if (e && e.signature) {
+          found.set(e.signature, normalizeEnhanced(e));
+          fetched++;
+        }
+      }
     }
     const txs: HistoryTx[] = [];
     let missing = 0;
     for (const s of wanted) {
       const tx = found.get(s.signature);
-      if (!tx) {
-        missing++;
+      if (!tx || tx.failed) {
+        missing += tx ? 0 : 1;
         continue;
       }
       if (tx.slot === null && s.slot !== undefined) tx.slot = s.slot;
       if (tx.time === null && s.blockTime) tx.time = s.blockTime * 1000;
       txs.push(tx);
     }
-    return { txs, missing };
+    return {
+      txs,
+      missing,
+      stats: {
+        signaturesRequested: sigs.length,
+        signaturesListed: sigs.length,
+        transactionsFetched: fetched,
+        transactionsFromCache: fromCache,
+        transactionsSucceeded: sigs.length - failed,
+        transactionsFailed: failed,
+        transactionsNormalized: txs.length,
+        missing,
+      },
+    };
   }
 
   // ─── transport ────────────────────────────────────────────────────────────

@@ -359,21 +359,29 @@ test("QUICK: one recent page + one oldest page, wallet origin, no deep walk", as
   const q = await svc.quick(W);
   assert.equal(q.calls, 2);
   assert.deepEqual(fake.requests.map((r) => [r.params.sortOrder, r.params.limit]), [["desc", 100], ["asc", 20]]);
-  assert.equal(q.recent.txs[0].signature, "s300");
-  assert.equal(q.oldest.txs[0].signature, "s1");
-  assert.equal(q.firstSeen, (T0 + 1) * 1000);
-  assert.equal(q.oldest.reachedStart, true);
+  assert.equal(q.recent.page.txs[0].signature, "s300");
+  assert.equal(q.originPage?.txs[0].signature, "s1");
+  assert.deepEqual({ found: q.origin.found, firstSeen: q.origin.firstSeen, signature: q.origin.signature, method: q.origin.method, complete: q.origin.complete, reason: q.origin.reason }, { found: true, firstSeen: (T0 + 1) * 1000, signature: "s1", method: "helius_primary_asc", complete: true, reason: "found" });
+  assert.equal(q.status, "quick_complete");
+  assert.equal(q.recent.complete, false);
+  assert.deepEqual(q.trace, [{ phase: "recent", steps: [{ source: "helius_primary", result: "success" }] }, { phase: "origin", steps: [{ source: "helius_primary", result: "success" }] }], "PRIMARY success: no false error");
   assert.equal(svc.cache.getState(W, "deep"), undefined, "QUICK never starts a DEEP walk");
+  // The origin is cached: a second QUICK costs one call.
+  const again = await svc.quick(W);
+  assert.equal(again.calls, 1);
+  assert.equal(again.origin.method, "cache");
+  assert.equal(again.origin.firstSeen, (T0 + 1) * 1000);
 });
 
 test("QUICK on the public RPC: small pages, origin only when the start is reachable", async () => {
   const { rpc, calls } = fakeRpc(dataset(40));
   const svc = new WalletHistoryService({ providers: [new PublicRpcHistoryProvider(rpc, CONFIG.publicRpc)], config: CONFIG });
   const q = await svc.quick(W);
-  assert.equal(q.recent.txs.length, 25, "public RPC pages are capped");
-  assert.equal(q.oldest.reachedStart, true);
-  assert.equal(q.oldest.txs[0].signature, "s1");
-  assert.equal(q.oldest.txs.length, 20);
+  assert.equal(q.recent.page.txs.length, 25, "public RPC pages are capped");
+  assert.equal(q.origin.found, true);
+  assert.equal(q.origin.method, "signature_walk");
+  assert.equal(q.originPage?.txs[0].signature, "s1");
+  assert.equal(q.originPage?.txs.length, 20);
   assert.equal(calls.transaction, 25 + 20 - 5, "transactions already fetched by the recent page are served from cache");
 });
 
@@ -500,4 +508,150 @@ test("the browser bundle cannot reach the Helius provider or its key", () => {
   const walk = (dir: string): string[] => readdirSync(new URL(dir, root), { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(`${dir}${e.name}/`) : [`${dir}${e.name}`]));
   for (const f of [...walk("src/"), "vite.config.ts", "index.html"]) assert.ok(!read(f).includes("VITE_HELIUS"), `${f} must not expose the key through a VITE_ variable`);
   assert.match(read("../.gitignore"), /^\.env$/m, ".env files are ignored by git");
+});
+
+// ─── 4.1b: provider trace, recent counters, origin ───────────────────────
+
+/** Fallback fixtures: `n` signatures newest first (ids f{n}…f1); those in `failed` are errors. */
+function sigSet(n: number, failed: (i: number) => boolean = () => false): SignatureInfo[] {
+  return Array.from({ length: n }, (_, k) => {
+    const i = n - k;
+    return { signature: `f${i}`, slot: i, blockTime: T0 + i, err: failed(i) ? { InstructionError: [0, "Custom"] } : null };
+  });
+}
+const sigHandler = (sigs: SignatureInfo[]) => (p: Record<string, unknown>): Reply => {
+  const start = p.before ? sigs.findIndex((s) => s.signature === p.before) + 1 : 0;
+  return { status: 200, body: sigs.slice(start, start + Number(p.limit)) };
+};
+const enhancedBuys = (list: string[]): Reply => ({ status: 200, body: list.map((s) => enhanced(s, Number(s.slice(1)), { feePayer: W, type: "SWAP", source: "PUMP_FUN", lamports: { [W]: -1e8, [CURVE]: 1e8 }, tokens: { [W]: 1_000_000n }, programs: [PUMP] })) });
+const jsonRpcError = (code: number, message: string): Reply => ({ status: 200, body: { __rpcError: { code, message } } });
+
+/** fakeHelius variant that can answer a JSON-RPC error object for getTransactionsForAddress. */
+function fakeHeliusRpcErr(h: Parameters<typeof fakeHelius>[0]) {
+  const base = fakeHelius(h);
+  const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+    const res = await base.fetchImpl(input, init);
+    const body = await res.json();
+    const err = body?.result?.__rpcError;
+    return new Response(JSON.stringify(err ? { jsonrpc: "2.0", id: body.id, error: err } : body), { status: res.status });
+  }) as typeof fetch;
+  return { ...base, fetchImpl };
+}
+
+test("provider trace: PRIMARY 403 / 429 / method unavailable → fixed codes, then enhanced success", async () => {
+  const sigs = sigSet(5);
+  const cases: [string, () => Reply, string][] = [
+    ["403", () => ({ status: 403, body: { error: "restricted on your current plan" } }), "forbidden"],
+    ["429", () => ({ status: 429, body: {} }), "rate_limited"],
+    ["-32601", () => jsonRpcError(-32601, "Method not found"), "method_unavailable"],
+  ];
+  for (const [label, gtfa, code] of cases) {
+    const fake = fakeHeliusRpcErr({ gtfa, signatures: sigHandler(sigs), enhanced: enhancedBuys });
+    const svc = new WalletHistoryService({ providers: [helius(fake)], config: CONFIG });
+    const p1 = await svc.getRecentHistory(W, 10);
+    assert.deepEqual(p1.trace, [{ source: "helius_primary", result: code }, { source: "helius_enhanced", result: "success" }], label);
+    assert.equal(p1.strategy, "helius_signatures_enhanced");
+    const p2 = await svc.getHistoryPage(W, { order: "desc", cursor: null, limit: 10 });
+    if (label === "429") assert.equal(p2.trace[0].result, "rate_limited", "429 is not sticky: PRIMARY retried");
+    else assert.deepEqual(p2.trace[0], { source: "helius_primary", result: "disabled", cause: code }, `${label}: sticky`);
+    for (const s of [...p1.trace, ...p2.trace]) assert.deepEqual(Object.keys(s).filter((k) => !["source", "result", "cause"].includes(k)), [], "trace holds codes only");
+  }
+});
+
+test("provider trace: Helius down entirely, public RPC answers", async () => {
+  const fake = fakeHelius({ gtfa: () => ({ status: 403, body: {} }), signatures: () => ({ status: 403, body: {} }) });
+  const { rpc } = fakeRpc(dataset(3));
+  const svc = new WalletHistoryService({ providers: [helius(fake), new PublicRpcHistoryProvider(rpc, CONFIG.publicRpc)], config: CONFIG });
+  const page = await svc.getRecentHistory(W, 3);
+  assert.deepEqual(page.trace, [{ source: "helius_primary", result: "forbidden" }, { source: "helius_enhanced", result: "forbidden" }, { source: "public_rpc", result: "success" }]);
+});
+
+test("recent counters: 100 signatures, 33 failed → requested 100, succeeded 67, normalized 67 (failed never returned)", async () => {
+  const sigs = sigSet(300, (i) => i > 201 && i % 3 === 0); // 204, 207 … 300: 33 failed
+  const fake = fakeHelius({ gtfa: () => ({ status: 403, body: {} }), signatures: sigHandler(sigs), enhanced: enhancedBuys });
+  const svc = new WalletHistoryService({ providers: [helius(fake)], config: CONFIG });
+  const page = await svc.getRecentHistory(W, 100);
+  assert.deepEqual(page.stats, { signaturesRequested: 100, signaturesListed: 100, transactionsFetched: 67, transactionsFromCache: 0, transactionsSucceeded: 67, transactionsFailed: 33, transactionsNormalized: 67, missing: 0 });
+  assert.equal(page.txs.length, 67);
+  assert.equal((fake.requests.find((r) => r.kind === "enhanced")!.body as { transactions: string[] }).transactions.length, 67, "failed signatures are not decoded");
+  assert.ok(page.txs.every((t) => !t.failed));
+});
+
+test("recent counters on PRIMARY: failed ones filtered server-side are reported as unknown, not zero", async () => {
+  const fake = fakeHelius({ gtfa: gtfaOver(dataset(30)) });
+  const page = await new WalletHistoryService({ providers: [helius(fake)], config: CONFIG }).getRecentHistory(W, 10);
+  assert.equal(page.stats.transactionsFailed, null);
+  assert.equal(page.stats.transactionsSucceeded, 10);
+  assert.equal(page.stats.transactionsNormalized, 10);
+});
+
+test("origin via fallback on a small wallet: signature walk reaches the start", async () => {
+  const sigs = sigSet(1500);
+  const fake = fakeHelius({ gtfa: () => ({ status: 403, body: {} }), signatures: sigHandler(sigs), enhanced: enhancedBuys });
+  const svc = new WalletHistoryService({ providers: [helius(fake)], config: CONFIG });
+  const q = await svc.quick(W);
+  assert.deepEqual({ found: q.origin.found, signature: q.origin.signature, method: q.origin.method, complete: q.origin.complete, reason: q.origin.reason, scanned: q.origin.signaturesScanned }, { found: true, signature: "f1", method: "signature_walk", complete: true, reason: "found", scanned: 20 });
+  assert.equal(q.origin.firstSeen, (T0 + 1) * 1000);
+  assert.equal(q.status, "quick_complete");
+  assert.deepEqual(q.trace[1], { phase: "origin", steps: [{ source: "helius_primary", result: "disabled", cause: "forbidden" }, { source: "helius_enhanced", result: "success" }] });
+});
+
+test("origin not found: > 10,000 signatures without PRIMARY → budget_exhausted, QUICK partial, recent still usable", async () => {
+  // Endless history: every signature page is full.
+  const fake = fakeHelius({
+    gtfa: () => ({ status: 403, body: {} }),
+    signatures: (p) => {
+      const from = p.before ? Number(String(p.before).slice(1)) - 1 : 1_000_000;
+      return { status: 200, body: Array.from({ length: Number(p.limit) }, (_, k) => ({ signature: `f${from - k}`, slot: from - k, blockTime: T0 + from - k, err: null })) };
+    },
+    enhanced: enhancedBuys,
+  });
+  const svc = new WalletHistoryService({ providers: [helius(fake)], config: CONFIG });
+  const q = await svc.quick(W);
+  assert.equal(q.recent.page.txs.length, 100, "recent activity is kept");
+  assert.equal(q.recent.complete, false);
+  assert.deepEqual({ found: q.origin.found, reason: q.origin.reason, complete: q.origin.complete, method: q.origin.method, scanned: q.origin.signaturesScanned }, { found: false, reason: "budget_exhausted", complete: false, method: "signature_walk", scanned: 10_000 });
+  assert.equal(q.status, "quick_partial");
+  assert.equal(fake.counts.signatures, 1 + 10, "QUICK keeps its 10-page origin budget");
+  assert.equal(svc.cache.getOrigin(W), undefined, "an unknown origin is never cached");
+});
+
+test("origin lookup failing on every provider → upstream_partial, recent still returned", async () => {
+  const txs = dataset(200).map((t) => normalizeParsed(t, "public-rpc"));
+  const stats = { signaturesRequested: 100, signaturesListed: 100, transactionsFetched: 100, transactionsFromCache: 0, transactionsSucceeded: 100, transactionsFailed: 0, transactionsNormalized: 100, missing: 0 };
+  const provider = {
+    name: "public_rpc" as const,
+    async getPage(req: { order: string }) {
+      if (req.order === "asc") throw Object.assign(new Error("boom"), { kind: "timeout" });
+      return { txs: txs.slice(0, 100), nextCursor: "sig:s101", provider: "public_rpc" as const, strategy: "public_rpc" as const, calls: 1, missing: 0, stats, trace: [{ source: "public_rpc" as const, result: "success" as const }] };
+    },
+  };
+  const q = await new WalletHistoryService({ providers: [provider], config: CONFIG }).quick(W);
+  assert.equal(q.status, "upstream_partial");
+  assert.equal(q.origin.reason, "error");
+  assert.equal(q.recent.page.txs.length, 100);
+  assert.deepEqual(q.trace[1], { phase: "origin", steps: [{ source: "public_rpc", result: "timeout" }] });
+});
+
+test("a wallet whose whole history fits in the recent page gets its origin without an extra call", async () => {
+  const fake = fakeHelius({ gtfa: gtfaOver(dataset(12)) });
+  const q = await new WalletHistoryService({ providers: [helius(fake)], config: CONFIG }).quick(W);
+  assert.equal(q.recent.complete, true);
+  assert.deepEqual([q.origin.found, q.origin.method, q.origin.signature, q.status], [true, "recent_page", "s1", "quick_complete"]);
+  assert.equal(fake.counts.gtfa, 1);
+});
+
+test("snapshot v1 (no version, no origins) still loads; saving upgrades it to v2 with origins", async () => {
+  const v1 = { txs: [normalizeParsed(fullTx("s1", 1), "public-rpc")], wallets: { [W]: ["s1"] }, states: [{ wallet: W, key: "deep", cursor: "gtfa:100", pages: 1, transactions: 1, done: false, stopReason: "max_pages", updatedAt: 0 }] };
+  const cache = MemoryHistoryCache.fromSnapshot(JSON.parse(JSON.stringify(v1)));
+  assert.equal(cache.getTx("s1")?.signature, "s1");
+  assert.equal(cache.getState(W, "deep")?.cursor, "gtfa:100");
+  assert.equal(cache.getOrigin(W), undefined);
+  const fake = fakeHelius({ gtfa: gtfaOver(dataset(12)) });
+  await new WalletHistoryService({ providers: [helius(fake)], cache, config: CONFIG }).quick(W);
+  const v2 = cache.snapshot();
+  assert.equal(v2.version, 2);
+  assert.equal(v2.origins?.[0].signature, "s1");
+  assert.equal(MemoryHistoryCache.fromSnapshot(JSON.parse(JSON.stringify(v2))).getOrigin(W)?.method, "recent_page");
+  for (const bad of [KEY, "api-key", "helius-rpc"]) assert.ok(!JSON.stringify(v2).includes(bad));
 });

@@ -18,8 +18,9 @@ import type { MemoryHistoryCache } from "../src/history/cache.ts";
 import { HISTORY_CONFIG } from "../src/history/config.ts";
 import type { HistoryConfig } from "../src/history/config.ts";
 import { HistoryUnavailableError } from "../src/history/provider.ts";
-import { WalletHistoryService } from "../src/history/service.ts";
-import type { HistoryProviderName, HistoryTx, WalletHistoryProvider } from "../src/history/types.ts";
+import { failureTrace, WalletHistoryService } from "../src/history/service.ts";
+import type { OriginResult, QuickStatus } from "../src/history/service.ts";
+import type { HistoryProviderName, HistoryTx, TraceStep, WalletHistoryProvider } from "../src/history/types.ts";
 import { SERVER_CONFIG } from "./config.ts";
 import type { ServerConfig } from "./config.ts";
 import { ConcurrencyGate, hostAllowed, isLoopback, parseQuery, TimeoutError, tokenMatches, WindowRateLimiter, withTimeout } from "./guards.ts";
@@ -28,16 +29,43 @@ import type { SnapshotStore } from "./snapshotStore.ts";
 
 export const ROUTE = "/api/wallet-history";
 
+export type ResponseStatus = QuickStatus | "deep_complete" | "deep_partial" | "upstream_partial";
+export type TracePhase = "recent" | "origin" | "deep";
+
+/** Counters of the QUICK recent page (null = not knowable from the provider used). */
+export interface RecentStats {
+  signaturesRequested: number;
+  signaturesListed: number;
+  transactionsFetched: number;
+  transactionsFromCache: number;
+  transactionsSucceeded: number | null;
+  transactionsFailed: number | null;
+  transactionsNormalized: number;
+  missing: number;
+}
+
 export interface WalletHistoryResponse {
   address: string;
   mode: Mode;
+  status: ResponseStatus;
   provider: HistoryProviderName | null;
   providers: HistoryProviderName[];
-  complete: boolean;
+  /** Non-sensitive provider transitions (fixed codes only). */
+  providerTrace: { phase: TracePhase; steps: TraceStep[] }[];
+  completeness: {
+    /** QUICK: the recent page reached the end of the history. DEEP: at least one page fetched. */
+    recentComplete: boolean;
+    /** The wallet's first transaction is known for sure. */
+    originComplete: boolean;
+    /** The wallet's entire history was downloaded (rarely true for QUICK). */
+    historyComplete: boolean;
+  };
   resumable: boolean;
-  stopReason: string | null;
+  /** QUICK: "quick_budget" or "end_of_history". DEEP: why the walk stopped. */
+  stopReason: string;
   pagination: { pagesThisRun: number; pagesTotal: number };
-  origin: { firstSeen: number | null; reachedStart: boolean } | null;
+  recent: RecentStats | null;
+  origin: OriginResult | null;
   transactionCount: number;
   truncated: boolean;
   transactions: HistoryTx[];
@@ -135,22 +163,27 @@ export function createWalletHistoryApp(o: WalletHistoryAppOptions) {
     if (mode === "quick") {
       const q = await service.quick(address);
       const seen = new Set<string>();
-      const txs = [...q.recent.txs, ...q.oldest.txs].filter((t) => !seen.has(t.signature) && !!seen.add(t.signature));
-      const warnings = [...q.recent.failures, ...q.oldest.failures].map((f) => ({ provider: f.provider, kind: f.kind }));
+      const txs = [...q.recent.page.txs, ...(q.originPage?.txs ?? [])].filter((t) => !seen.has(t.signature) && !!seen.add(t.signature));
+      const failures = [...q.recent.page.failures, ...(q.originPage?.failures ?? [])];
+      const providers = [q.recent.page.provider, ...(q.originPage ? [q.originPage.provider] : [])];
+      const { signaturesRequested, signaturesListed, transactionsFetched, transactionsFromCache, transactionsSucceeded, transactionsFailed, transactionsNormalized, missing } = q.recent.stats;
       return {
         address,
         mode,
-        provider: q.recent.provider,
-        providers: [...new Set([q.recent.provider, q.oldest.provider])],
-        complete: q.recent.nextCursor === null,
+        status: q.status,
+        provider: q.recent.page.provider,
+        providers: [...new Set(providers)],
+        providerTrace: q.trace,
+        completeness: { recentComplete: q.recent.complete, originComplete: q.origin.complete, historyComplete: q.recent.complete },
         resumable: false,
-        stopReason: null,
-        pagination: { pagesThisRun: 2, pagesTotal: 2 },
-        origin: { firstSeen: q.firstSeen, reachedStart: q.oldest.reachedStart ?? false },
+        stopReason: q.recent.complete ? "end_of_history" : "quick_budget",
+        pagination: { pagesThisRun: 1 + (q.originPage ? 1 : 0), pagesTotal: 1 + (q.originPage ? 1 : 0) },
+        recent: { signaturesRequested, signaturesListed, transactionsFetched, transactionsFromCache, transactionsSucceeded, transactionsFailed, transactionsNormalized, missing },
+        origin: q.origin,
         transactionCount: txs.length,
         truncated: false,
         transactions: txs,
-        warnings,
+        warnings: failures.map((f) => ({ provider: f.provider, kind: f.kind })),
       };
     }
     const d = await service.getFullHistory(address, {
@@ -161,12 +194,15 @@ export function createWalletHistoryApp(o: WalletHistoryAppOptions) {
     return {
       address,
       mode,
+      status: d.complete ? "deep_complete" : d.stopReason === "error" ? "upstream_partial" : "deep_partial",
       provider: d.providers[0] ?? null,
       providers: d.providers,
-      complete: d.complete,
+      providerTrace: [{ phase: "deep", steps: d.trace }],
+      completeness: { recentComplete: d.pagesTotal > 0, originComplete: d.complete, historyComplete: d.complete },
       resumable: !d.complete,
       stopReason: d.stopReason,
       pagination: { pagesThisRun: d.pagesThisRun, pagesTotal: d.pagesTotal },
+      recent: null,
       origin: null,
       transactionCount: d.txs.length,
       truncated: false,
@@ -174,6 +210,9 @@ export function createWalletHistoryApp(o: WalletHistoryAppOptions) {
       warnings: (d.failures ?? []).map((f) => ({ provider: f.provider, kind: f.kind })),
     };
   }
+
+  /** "helius_primary:forbidden>helius_enhanced:success" — codes only, for server logs. */
+  const traceSummary = (steps: TraceStep[]) => steps.map((s) => `${s.source}:${s.result}${s.cause ? `(${s.cause})` : ""}${s.count && s.count > 1 ? `x${s.count}` : ""}`).join(">");
 
   async function handler(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const started = now();
@@ -210,7 +249,8 @@ export function createWalletHistoryApp(o: WalletHistoryAppOptions) {
         if (e instanceof TimeoutError) return fail(res, 504, "timeout", { resumable: mode === "deep" }), done(504, "timeout");
         if (e instanceof HistoryUnavailableError) {
           const failures = e.failures.map((f) => ({ provider: f.provider, kind: f.kind }));
-          return fail(res, 502, "upstream_unavailable", { failures }), done(502, "upstream_unavailable", failures.map((f) => `${f.provider}:${f.kind}`).join(","));
+          const steps = failureTrace(e.failures);
+          return fail(res, 502, "upstream_unavailable", { status: "failed", failures, providerTrace: [{ phase: mode === "deep" ? "deep" : "recent", steps }] }), done(502, "upstream_unavailable", traceSummary(steps));
         }
         throw e;
       }
@@ -218,7 +258,7 @@ export function createWalletHistoryApp(o: WalletHistoryAppOptions) {
       if (text === null) return fail(res, 500, "response_too_large"), done(500, "response_too_large");
       res.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-length": String(Buffer.byteLength(text)) });
       res.end(text);
-      done(200);
+      done(200, undefined, result.providerTrace.map((p) => `${p.phase}=${traceSummary(p.steps)}`).join(" "));
     } catch {
       if (!res.headersSent) fail(res, 500, "internal_error");
       done(500, "internal_error");

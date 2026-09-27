@@ -52,6 +52,55 @@ export interface PageRequest {
   cached?: (signature: string) => HistoryTx | undefined;
 }
 
+/** Where a trace step happened. */
+export type TraceSource = "helius_primary" | "helius_enhanced" | "public_rpc";
+
+/** Fixed, non-sensitive outcome codes (never an upstream message, URL, header or body). */
+export type TraceResult =
+  | "success"
+  | "unauthorized"
+  | "forbidden"
+  | "rate_limited"
+  | "method_unavailable"
+  | "timeout"
+  | "network"
+  | "invalid_response"
+  | "unknown"
+  /** Not tried: turned off earlier in this process (see `cause`). */
+  | "disabled"
+  /** Not tried: not applicable to this request (e.g. a signature cursor). */
+  | "skipped";
+
+export interface TraceStep {
+  source: TraceSource;
+  result: TraceResult;
+  /** For "disabled": the failure that turned it off. */
+  cause?: TraceResult;
+  /** Aggregated steps (DEEP): how many times this outcome occurred. */
+  count?: number;
+}
+
+/** Counters of one page. `null` = not knowable from this source. */
+export interface PageStats {
+  /** Page size asked for. */
+  signaturesRequested: number;
+  /** Signatures (or items) the source listed, failed ones included when it lists them. */
+  signaturesListed: number;
+  /** Downloaded from upstream for this page (cache hits excluded). */
+  transactionsFetched: number;
+  transactionsFromCache: number;
+  transactionsSucceeded: number | null;
+  /** Failed transactions listed and left out (null when the source filtered them server-side). */
+  transactionsFailed: number | null;
+  /** Normalized transactions returned (succeeded only). */
+  transactionsNormalized: number;
+  /** Listed but not retrievable. */
+  missing: number;
+}
+
+/** For oldest-first requests: whether the true start of the history was reached. */
+export type OriginStatus = "reached" | "budget_exhausted" | "unsupported";
+
 export interface HistoryPage {
   txs: HistoryTx[];
   /** Cursor for the next page in the same order, null when the history is exhausted. */
@@ -67,6 +116,11 @@ export interface HistoryPage {
   /** Set when the provider had to restart pagination (cursor from another strategy). */
   restarted?: boolean;
   note?: string;
+  stats: PageStats;
+  /** Oldest-first requests only. */
+  originStatus?: OriginStatus;
+  /** Non-sensitive steps taken by the provider for this page. */
+  trace: TraceStep[];
 }
 
 export interface HistoryLogEntry {
