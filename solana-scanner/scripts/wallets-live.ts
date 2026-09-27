@@ -3,6 +3,10 @@
  *
  *   npm run wallets:live          # 5 candidates (slow: the free RPC serves ~1 tx/s)
  *   npm run wallets:live -- 2
+ *   npm run wallets:live -- 1 --history [--deep]
+ *       step 4.2: wallet histories from WalletHistoryService (Helius when
+ *       HELIUS_API_KEY is set in this Node process, else the public RPC);
+ *       --deep allows selective DEEP (≤ 8 wallets per token). Server-side only.
  *
  * Pipeline: DEX Screener → scores → candidates → on-chain validation → wallet
  * discovery → shortlist → wallet facts / bounded history. No combined score.
@@ -17,14 +21,22 @@ import { OnchainService, selectCandidates } from "../src/onchain/service.ts";
 import { scorePairs } from "../src/scoring/score.ts";
 import { WALLET_DISCLAIMER } from "../src/wallets/config.ts";
 import type { WalletIntel } from "../src/wallets/intel.ts";
+import { WALLET_CONFIG } from "../src/wallets/config.ts";
 import { WalletIntelService } from "../src/wallets/service.ts";
+import { createServerProviders } from "../src/history/server/heliusEnv.ts";
+import { WalletHistoryService } from "../src/history/service.ts";
 
-const count = Number(process.argv[2] ?? ONCHAIN_CONFIG.candidates.max);
+const args = process.argv.slice(2);
+const useHistory = args.includes("--history");
+const allowDeep = args.includes("--deep");
+const count = Number(args.find((a) => !a.startsWith("--")) ?? ONCHAIN_CONFIG.candidates.max);
 const log: RpcLogEntry[] = [];
 const rpc = new SolanaRpc({ url: process.env.SOLANA_RPC_URL, onRequest: (e) => log.push(e) });
 const dex = new DexScreenerClient();
 const onchain = new OnchainService(rpc);
-const wallets = new WalletIntelService(rpc, dex);
+const history = useHistory ? createServerProviders({ env: process.env, rpc }) : null;
+if (history) console.log(`Historiques : WalletHistoryService — Helius ${history.heliusEnabled ? "activé" : "désactivé (RPC public)"} — DEEP ${allowDeep ? "sélectif" : "désactivé"}`);
+const wallets = new WalletIntelService(rpc, dex, WALLET_CONFIG, history ? { history: () => new WalletHistoryService({ providers: history.providers }), deep: allowDeep } : {});
 
 const scan = await scanSolana(dex);
 const rows = scorePairs(mostLiquidPairPerToken(scan.pairs), scan.fetchedAt);
@@ -60,6 +72,15 @@ for (const row of candidates) {
         ` · WQ ${p.quality} ${p.confidence} · ${p.facts.signatureCount >= 5000 ? "≥5000" : p.facts.signatureCount} tx · trades ${m ? `${m.evaluated} (${m.profitable} rentables, médiane ${pctFmt(m.medianReturn)})` : "UNKNOWN"}` +
         `${p.flags.length ? ` · ⚑ ${p.flags.map((f) => f.label).join(", ")}` : ""}`,
     );
+  }
+  if (intel.source === "history") {
+    console.log(`   Historiques (step 4.2) : DEEP lancés ${intel.deepRuns ?? 0}`);
+    for (const t of intel.tracked) {
+      const h = t.profile.facts.history;
+      if (h) console.log(`   · ${short(t.address)} ${h.completeness} · origine ${h.origin.found ? "trouvée" : `UNKNOWN (${h.origin.reason})`} · DEEP ${h.deep.attempted ? h.deep.stopReason : h.deep.skippedReason} · bot ${h.bot.botLike ? h.bot.evidence.join(" ; ") : "non"} · transferts ${h.transfers.length}`);
+    }
+    const d = intel.creatorDistribution;
+    if (d) console.log(`   Distribution du deployment wallet : ${d.transfers} transferts vers ${d.recipients.length} wallets (${d.pctSupply?.toFixed(1) ?? "?"} % de l'offre) · reventes observées ${d.recipientSells.length}/${d.recipientsChecked}`);
   }
   for (const g of intel.related.groups) console.log(`   Potentially related: ${g.members.map((m) => short(m.address)).join(", ")} — ${g.reasons.join(" ; ")}`);
   for (const n of intel.notes) console.log(`   note: ${n}`);

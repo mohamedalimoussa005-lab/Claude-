@@ -31,6 +31,10 @@ export interface Position {
   /** Entry within 1 h of launch; null when the launch time is unknown. */
   entryMinutesAfterLaunch: number | null;
   holdMinutes: number | null;
+  /** SOL received minus the cost of the sold part (SOL, fees included). null when nothing sold. */
+  realizedPnlSol: number | null;
+  /** Everything bought was sold (≥ 99 %). */
+  closed: boolean;
 }
 
 export interface WalletMetrics {
@@ -135,6 +139,8 @@ export function buildPositions(trades: Trade[], launchTimes: LaunchTimes, prices
       totalReturnEst,
       entryMinutesAfterLaunch: launch !== undefined && firstBuy !== null ? Math.max(0, (firstBuy - launch) / 60_000) : null,
       holdMinutes: firstBuy !== null && lastSell !== null && soldShare > 0.99 ? (lastSell - firstBuy) / 60_000 : null,
+      realizedPnlSol: tokensOut > 0 ? solOut - costOfSold : null,
+      closed: soldShare > 0.99,
     });
   }
   return out;
@@ -171,8 +177,11 @@ export function detectFlags(f: WalletFacts, ctx: ProfileContext, entryTime: numb
   if (ctx.creator && f.address === ctx.creator) add("creator", "Deployment-associated wallet", "high", "adresse liée au déploiement du token");
   if (ctx.creator && f.funder === ctx.creator) add("fundedByCreator", "Financé par le deployment-associated wallet", "high", `financé par ${short(ctx.creator)}`);
   if (ctx.creatorFunder && f.funder === ctx.creatorFunder) add("sameFunderAsCreator", "Même financeur que le deployment-associated wallet", "high", `financeur commun ${short(ctx.creatorFunder)}`);
-  if (f.signatureCount >= c.flags.busySignatures) {
-    add("busy", "Activité de type bot / haute fréquence", "medium", `≥ ${c.flags.busySignatures.toLocaleString("en-US")} transactions`);
+  // Same flag, same severity as before; step 4.2 adds behavioural evidence from normalized transactions.
+  const bot = f.history?.bot;
+  if (f.signatureCount >= c.flags.busySignatures || bot?.botLike) {
+    const count = f.signatureCount >= c.flags.busySignatures ? `≥ ${c.flags.busySignatures.toLocaleString("en-US")} transactions` : null;
+    add("busy", "Activité de type bot / haute fréquence", "medium", [count, ...(bot?.botLike ? bot.evidence : [])].filter(Boolean).join(" ; "));
   }
   if (f.firstSeen !== null && entryTime !== null && entryTime - f.firstSeen < c.flags.freshWalletHours * 3_600_000) {
     add("fresh", "Wallet créé très récemment", "medium", `première activité ${((entryTime - f.firstSeen) / 3_600_000).toFixed(1)} h avant son entrée`);
@@ -196,7 +205,7 @@ export function detectFlags(f: WalletFacts, ctx: ProfileContext, entryTime: numb
 export function profileWallet(f: WalletFacts, ctx: ProfileContext, entryTime: number | null, c: WalletConfig = WALLET_CONFIG): WalletProfile {
   const q = c.quality;
   const flags = detectFlags(f, ctx, entryTime, c);
-  const unknowns: string[] = [];
+  const unknowns: string[] = [...(f.history?.unknowns ?? [])];
   const items: QualityItem[] = [];
   let metrics: WalletMetrics | null = null;
 

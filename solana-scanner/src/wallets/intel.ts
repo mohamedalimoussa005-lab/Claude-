@@ -13,6 +13,7 @@ import { profileWallet } from "./profile.ts";
 import type { WalletProfile } from "./profile.ts";
 import type { Trade } from "./trades.ts";
 import type { LaunchTimes, PricesSol, TokenScan, WalletFacts } from "./types.ts";
+import type { CreatorDistribution } from "./historyFacts.ts";
 
 export interface Buyer {
   address: string;
@@ -56,6 +57,11 @@ export interface WalletIntel {
   trackedInflowSol: number;
   trackedInflowUsdEst: number | null;
   notes: string[];
+  /** Step 4.2 history-layer path only. */
+  source?: "rpc" | "history";
+  /** Creator token transfers to other wallets (not sells), when the creator's history was read. */
+  creatorDistribution?: CreatorDistribution | null;
+  deepRuns?: number;
 }
 
 export interface IntelContext {

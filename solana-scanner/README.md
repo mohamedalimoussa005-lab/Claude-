@@ -302,3 +302,22 @@ sinon RPC public), `WALLET_HISTORY_DEEP_TOKEN` (optionnelle, sinon DEEP désacti
 | Protections | écoute sur 127.0.0.1, en-tête Host local obligatoire (anti DNS-rebinding), 2 analyses simultanées max (503), timeout 60 s (504, l'analyse garde son créneau jusqu'à sa fin réelle), réponse ≤ 2 Mo (transactions les plus anciennes retirées, `truncated`), `cache-control: no-store` |
 | Erreurs | codes fixes (`invalid_address`, `rate_limited`, `upstream_unavailable` + `{provider, kind}`…) ; jamais la clé, une URL Helius, une variable d'environnement ni le message amont |
 | Cache | `MemoryHistoryCache` partagé, persisté dans `.cache/wallet-history.json` (écriture atomique, ignoré par git) après chaque analyse et à l'arrêt ; rechargé au démarrage, donc un DEEP reprend après redémarrage. Contient uniquement des transactions normalisées, l'état de pagination et les origines trouvées (snapshot v2 ; un snapshot v1 sans `version`/`origins` se recharge tel quel) |
+
+## Étape 4.2 : Wallet Intelligence sur WalletHistoryService
+
+Code : `src/wallets/historyFacts.ts`, `botSignals.ts`, `compare.ts`. `WalletIntelService` reçoit la couche historique
+par injection (`options.history`, une instance par token) ; sans elle, le chemin RPC de l'étape 4 reste utilisé tel quel.
+L'UI ne construit jamais Helius. Aucune formule de Wallet Quality ni aucun seuil de Confidence ne change.
+
+| Point | Règle |
+|---|---|
+| Collecte | QUICK d'abord (activité récente + origine). DEEP seulement si l'historique est incomplet, que le wallet n'est pas clairement un bot, que son historique peut tenir dans le budget DEEP (2 000 transactions), et au plus 8 wallets par token ; désactivé par défaut (`deep: true` pour l'autoriser) |
+| Limite des 150 transactions | supprimée sur ce chemin : trades, positions, PnL réalisé et win rate existent si et seulement si l'historique est **complet** (page récente couvrant tout l'historique, ou DEEP terminé), quelle que soit sa longueur |
+| UNKNOWN | origine non trouvée → âge et financement UNKNOWN (listés dans `unknowns`), jamais un signal négatif ; historique incomplet → pas de trades inventés. `signatureCount` devient une borne inférieure quand l'historique est incomplet |
+| Bot / haute fréquence | depuis les transactions normalisées : transactions/min, achats revendus en ≤ 60 s, reventes de la quantité exacte, nombre de tokens, tickets (seuils dans `WALLET_CONFIG.bot`). Alimente le flag existant « Activité de type bot / haute fréquence » (même sévérité, même pénalité) |
+| Transferts | classés TRANSFER depuis les soldes (jamais le type Helius), conservés avec leurs contreparties ; jamais BUY/SELL |
+| Distribution du créateur | transferts du deployment wallet vers d'autres wallets (nombre, destinataires, % de l'offre), destinataires suivis, et reventes observées chez 5 destinataires au plus |
+| Positions | entrée, sortie, durée de détention, SOL dépensé / reçu, `realizedPnlSol` (sur la part vendue) et `closed` par position. Pas de PnL USD historique, de PnL latent ni de multiple max (pas encore d'historique de prix) |
+| Comparaison | `compareIntel(old, new)` : wallets analysés, historiques complets, positions reconstruites / réalisées, signaux bot, âge et financement connus, liens créateur, entrées de Confidence disponibles. Descriptif uniquement |
+
+`npm run wallets:live -- 1 --history [--deep]` exécute ce chemin côté Node (clé Helius lue uniquement dans ce processus).

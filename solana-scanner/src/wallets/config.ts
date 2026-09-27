@@ -48,6 +48,36 @@ export interface WalletConfig {
     /** Distinct tokens bought per 100 transactions above this → buys almost every new token. */
     tokensPer100Txs: number;
   };
+  /**
+   * Behavioural bot / high-frequency signals from normalized transactions
+   * (step 4.2). They only feed the existing "busy" flag: same key, same
+   * severity, same penalty — no new score.
+   */
+  bot: {
+    /** Below this many transactions, rates are not judged. */
+    minTransactions: number;
+    /** Transactions per minute over the observed span → high frequency. */
+    highFrequencyTxPerMinute: number;
+    /** A BUY followed by a SELL of the same token within this many seconds is a fast round trip. */
+    fastRoundTripSeconds: number;
+    /** Fast round trips needed, and their share of buys, for a "fast flipper". */
+    minFastRoundTrips: number;
+    fastRoundTripShare: number;
+    /** Distinct tokens traded in the sample → many tokens. */
+    manyTokens: number;
+  };
+  /** History layer (WalletHistoryService) usage in step 4.2. */
+  historyLayer: {
+    /** DEEP runs per token at most (only for shortlisted wallets that need it). */
+    deepMaxWalletsPerToken: number;
+    deepMaxPages: number;
+    /** A history longer than this can't be completed by DEEP: not attempted. */
+    deepMaxTransactions: number;
+    /** Recipients of creator token transfers checked (QUICK) for later sells. */
+    distributionRecipientsChecked: number;
+    /** A first transaction bringing at least this much SOL counts as funding. */
+    minFundingSol: number;
+  };
   quality: {
     /** Closed or valued positions in the reconstructed history → points. */
     sampleSize: { max: number; curve: Curve };
@@ -92,6 +122,21 @@ export const WALLET_CONFIG: WalletConfig = {
     fundedBeforeLaunchMinutes: 60,
     microTicketSol: 0.01,
     tokensPer100Txs: 25,
+  },
+  bot: {
+    minTransactions: 20,
+    highFrequencyTxPerMinute: 2,
+    fastRoundTripSeconds: 60,
+    minFastRoundTrips: 5,
+    fastRoundTripShare: 0.5,
+    manyTokens: 10,
+  },
+  historyLayer: {
+    deepMaxWalletsPerToken: 8,
+    deepMaxPages: 20,
+    deepMaxTransactions: 2000,
+    distributionRecipientsChecked: 5,
+    minFundingSol: 0.01,
   },
   quality: {
     sampleSize: {

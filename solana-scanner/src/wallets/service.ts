@@ -14,6 +14,8 @@ import { checkFunders, collectTokenScan, collectWalletFacts, HistoryBudget } fro
 import type { WalletRpc } from "./collect.ts";
 import { WALLET_CONFIG } from "./config.ts";
 import type { WalletConfig } from "./config.ts";
+import { collectTokenWalletsFromHistory } from "./historyFacts.ts";
+import type { HistorySource } from "./historyFacts.ts";
 import { aggregateBuyers, buildIntel, shortlist } from "./intel.ts";
 import type { WalletIntel } from "./intel.ts";
 import { WSOL_MINT } from "./trades.ts";
@@ -54,19 +56,32 @@ export async function fetchPricesSol(dex: PriceClient, mints: string[], solUsd: 
   return out;
 }
 
+export interface WalletIntelOptions {
+  /**
+   * Step 4.2: history layer, injected by the backend (never built from UI code).
+   * Called once per token so each token gets its own DEEP budget. Without it,
+   * the step 4 RPC path is used unchanged.
+   */
+  history?: () => HistorySource;
+  /** Allow selective DEEP on shortlisted wallets (default false). */
+  deep?: boolean;
+}
+
 export class WalletIntelService {
   private readonly rpc: WalletRpc;
   private readonly dex: PriceClient;
   private readonly config: WalletConfig;
+  private readonly options: WalletIntelOptions;
   readonly budget: HistoryBudget;
   /** Launch times of analysed tokens, shared so histories can measure early entries on them. */
   readonly launchTimes: LaunchTimes = {};
   private readonly results = new Map<string, { at: number; value: Promise<WalletIntel> }>();
 
-  constructor(rpc: WalletRpc, dex: PriceClient, config: WalletConfig = WALLET_CONFIG) {
+  constructor(rpc: WalletRpc, dex: PriceClient, config: WalletConfig = WALLET_CONFIG, options: WalletIntelOptions = {}) {
     this.rpc = rpc;
     this.dex = dex;
     this.config = config;
+    this.options = options;
     this.budget = new HistoryBudget(config.history.maxHistoryTransactionsPerRun);
   }
 
@@ -97,14 +112,21 @@ export class WalletIntelService {
     const buyers = aggregateBuyers(scan, { creator, holdersPct, excluded }, c);
     const picks = shortlist(buyers, c.discovery.shortlist);
 
-    const facts: WalletFacts[] = [];
-    for (const b of picks) facts.push(await collectWalletFacts(this.rpc, b.address, this.budget, c));
+    let facts: WalletFacts[] = [];
     let creatorFunder: string | null = null;
-    if (creator) {
-      try {
-        creatorFunder = (await collectWalletFacts(this.rpc, creator, new HistoryBudget(0), c)).funder;
-      } catch {
-        creatorFunder = null;
+    let fromHistory: Awaited<ReturnType<typeof collectTokenWalletsFromHistory>> | null = null;
+    if (this.options.history) {
+      fromHistory = await collectTokenWalletsFromHistory(this.options.history(), { picks: picks.map((b) => b.address), creator, mint, supply, deepAllowed: !!this.options.deep }, c);
+      facts = fromHistory.facts;
+      creatorFunder = fromHistory.creatorFacts?.funder ?? null;
+    } else {
+      for (const b of picks) facts.push(await collectWalletFacts(this.rpc, b.address, this.budget, c));
+      if (creator) {
+        try {
+          creatorFunder = (await collectWalletFacts(this.rpc, creator, new HistoryBudget(0), c)).funder;
+        } catch {
+          creatorFunder = null;
+        }
       }
     }
     await checkFunders(this.rpc, facts);
@@ -112,6 +134,8 @@ export class WalletIntelService {
     const historyMints = [...new Set(facts.flatMap((f) => (f.trades ?? []).map((t) => t.mint)))];
     const pricesSol = await fetchPricesSol(this.dex, historyMints, solUsd);
 
-    return buildIntel(scan, buyers, facts, { creator, creatorFunder, holdersPct, excluded, launchTimes: this.launchTimes, pricesSol, now: Date.now() }, c);
+    const intel = buildIntel(scan, buyers, facts, { creator, creatorFunder, holdersPct, excluded, launchTimes: this.launchTimes, pricesSol, now: Date.now() }, c);
+    if (fromHistory) return { ...intel, source: "history", creatorDistribution: fromHistory.distribution, deepRuns: fromHistory.deepRuns };
+    return { ...intel, source: "rpc" };
   }
 }
