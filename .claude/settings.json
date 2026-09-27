@@ -1,0 +1,34 @@
+{
+  "enabledMcpjsonServers": ["helius"],
+  "permissions": {
+    "allow": [
+      "mcp__helius__heliusWallet",
+      "mcp__helius__heliusAsset",
+      "mcp__helius__heliusTransaction",
+      "mcp__helius__heliusChain",
+      "mcp__helius__heliusKnowledge",
+      "mcp__helius__expandResult"
+    ],
+    "deny": [
+      "mcp__helius__heliusWrite",
+      "mcp__helius__heliusAccount",
+      "mcp__helius__heliusStreaming",
+      "mcp__helius__heliusCompression"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__helius__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/helius-readonly.mjs\"",
+            "timeout": 10,
+            "statusMessage": "Helius read-only guard"
+          }
+        ]
+      }
+    ]
+  }
+}
