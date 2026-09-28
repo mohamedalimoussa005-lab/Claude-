@@ -12,11 +12,12 @@ Aucun score ne prédit le prix.
 ```bash
 cd solana-scanner
 npm install
-npm run dev          # interface sur http://localhost:5173
+npm run dev:full     # backend d'historique (server/, lit .env) + interface sur http://localhost:5173, Ctrl+C arrête les deux
+npm run dev          # interface seule (Wallet Intelligence : historiques UNKNOWN tant que `npm run server` ne tourne pas)
 npm run test:live    # test réel de tous les endpoints (nécessite l'accès réseau à api.dexscreener.com)
 npm run score:live   # scan réel + top 10 par Opportunity Score, détail des points et anomalies (-- 20 pour un top 20)
 npm run onchain:live # scan réel → sélection des candidats → analyse on-chain (RPC Solana public), DEX et on-chain côte à côte
-npm run wallets:live # + wallet intelligence sur les candidats (lent : ≈ 1 transaction/s sur le RPC gratuit)
+npm run wallets:live # + wallet intelligence (historiques NEW par défaut ; -- --old-history pour l'ancien chemin RPC)
 npm test             # tests unitaires hors ligne (normalisation, rate limit, retries, pipeline, scoring)
 npm run typecheck
 ```
@@ -282,9 +283,17 @@ au navigateur des transactions normalisées, jamais la clé ni une URL Helius.
 Code : `server/` (Node `node:http`, aucun framework, hors de `src/` donc jamais bundlé par Vite).
 
 ```bash
+npm run dev:full # les deux d'un coup, ou séparément :
 npm run server   # API sur http://127.0.0.1:8787 (lit solana-scanner/.env s'il existe)
 npm run dev      # dans un autre terminal : Vite transmet /api au backend
 ```
+
+L'interface utilise ce backend pour **tous** les historiques de wallets de Wallet Intelligence
+(`src/history/httpSource.ts` → `/api/wallet-history`, via `createBrowserWalletIntelService`) : mêmes modules que les
+scripts (acheteurs + wallets structurels Step 3, QUICK, complétion QUICK, bot, relations, clusters, Quality /
+Confidence), DEEP jamais demandé. Backend absent → historiques UNKNOWN et bandeau d'avertissement, sans repli sur
+l'ancien chemin RPC ni appel Helius depuis le navigateur. Le scan du token et l'analyse on-chain (Step 3) restent sur
+le RPC public via `/solana-rpc`.
 
 Variables **serveur uniquement** (fichier `.env`, ignoré par git ; jamais de `VITE_*`) : `HELIUS_API_KEY` (optionnelle,
 sinon RPC public), `WALLET_HISTORY_DEEP_TOKEN` (optionnelle, sinon DEEP désactivé), `WALLET_HISTORY_PORT`,
@@ -294,6 +303,7 @@ sinon RPC public), `WALLET_HISTORY_DEEP_TOKEN` (optionnelle, sinon DEEP désacti
 |---|---|
 | `address` | base58 décodant exactement 32 octets ; tout autre paramètre → 400 |
 | `mode=quick` | page récente + page la plus ancienne ; 30 requêtes / min / client |
+| `mode=completion` | complétion QUICK d'un wallet : `cursor` (renvoyé par `mode=quick` : `sig:<signature>` ou `gtfa:<slot>:<position>`, tout autre format → 400) et `pages` optionnel (1 à 2) ; transactions (200) et taille de page (100) fixées côté serveur ; fenêtre de 30 / min distincte de `quick` |
 | `mode=deep` | exige `WALLET_HISTORY_DEEP_TOKEN` côté serveur, `Authorization: Bearer <token>` et un client loopback ; 3 / min ; budget 20 pages / 2 000 transactions par analyse ; reprise automatique à l'appel suivant (`resumable`) |
 | Réponse | `address`, `mode`, `status` (`quick_complete` / `quick_partial` / `upstream_partial` / `deep_complete` / `deep_partial`, `failed` en 502), `provider(s)`, `providerTrace`, `completeness` (`recentComplete`, `originComplete`, `historyComplete`), `resumable`, `stopReason` (QUICK : `quick_budget` ou `end_of_history`), `pagination`, `recent` (compteurs), `origin`, `transactions` (normalisées, réussies uniquement), `truncated`, `warnings` |
 | `providerTrace` | étapes par phase (`recent`, `origin`, `deep`) : `helius_primary` / `helius_enhanced` / `public_rpc` × `success`, `unauthorized`, `forbidden`, `rate_limited`, `method_unavailable`, `timeout`, `network`, `invalid_response`, `unknown`, `disabled` (+ `cause`), `skipped`. Codes fixes uniquement : jamais de message amont, URL, clé, en-tête ou stack |

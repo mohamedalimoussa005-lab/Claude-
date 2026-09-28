@@ -13,7 +13,7 @@ import { SolanaRpc } from "../onchain/rpc.ts";
 import { OnchainService, selectCandidates } from "../onchain/service.ts";
 import { FiltersPanel } from "./FiltersPanel.tsx";
 import { OnchainBadge } from "./OnchainPanel.tsx";
-import { WalletIntelService } from "../wallets/service.ts";
+import { createBrowserWalletIntelService } from "../wallets/browserService.ts";
 import type { WalletState } from "./WalletPanel.tsx";
 import type { OnchainState } from "./OnchainPanel.tsx";
 import { ConfidenceBadge, LabelBadge } from "./LabelBadge.tsx";
@@ -197,7 +197,8 @@ export function App() {
 
   const solanaRpc = useMemo(() => new SolanaRpc({ url: import.meta.env.VITE_SOLANA_RPC_URL ?? "/solana-rpc" }), []);
   const onchainService = useMemo(() => new OnchainService(solanaRpc), [solanaRpc]);
-  const walletService = useMemo(() => new WalletIntelService(solanaRpc, client), [solanaRpc, client]);
+  // Wallet histories come from the local backend (/api/wallet-history, NEW history layer); no DEEP from the UI.
+  const walletService = useMemo(() => createBrowserWalletIntelService(solanaRpc, client), [solanaRpc, client]);
 
   /** Wallet discovery runs only on demand and only after the token's on-chain analysis (pipeline order). */
   const runWallets = useCallback(

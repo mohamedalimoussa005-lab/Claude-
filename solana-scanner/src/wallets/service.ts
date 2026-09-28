@@ -91,6 +91,15 @@ export class WalletIntelService {
     this.budget = new HistoryBudget(config.history.maxHistoryTransactionsPerRun);
   }
 
+  /** "history" = NEW history layer (step 4.2), "rpc" = OLD step 4 RPC path. */
+  get historyPath(): "history" | "rpc" {
+    return this.options.history ? "history" : "rpc";
+  }
+
+  get deepAllowed(): boolean {
+    return !!this.options.history && !!this.options.deep;
+  }
+
   analyze(row: ScoredPair, onchain: OnchainResult, force = false): Promise<WalletIntel> {
     const key = row.pair.tokenAddress;
     const hit = this.results.get(key);

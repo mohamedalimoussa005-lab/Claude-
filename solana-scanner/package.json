@@ -8,6 +8,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:full": "node --experimental-strip-types --no-warnings scripts/dev-full.ts",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "server": "node --experimental-strip-types --no-warnings server/index.ts",

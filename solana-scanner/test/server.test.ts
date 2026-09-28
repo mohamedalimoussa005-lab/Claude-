@@ -164,7 +164,7 @@ test("QUICK: recent + oldest pages, origin, normalized transactions only", async
     const r = await get(s.port, q(W, "quick"));
     assert.equal(r.status, 200);
     assert.equal(r.headers["cache-control"], "no-store");
-    assert.deepEqual(Object.keys(r.json).sort(), ["address", "completeness", "mode", "origin", "pagination", "provider", "providerTrace", "providers", "recent", "resumable", "status", "stopReason", "transactionCount", "transactions", "truncated", "warnings"]);
+    assert.deepEqual(Object.keys(r.json).sort(), ["address", "completeness", "mode", "origin", "pagination", "provider", "providerTrace", "providers", "quick", "recent", "resumable", "status", "stopReason", "transactionCount", "transactions", "truncated", "warnings"]);
     assert.equal(r.json.mode, "quick");
     assert.equal(r.json.status, "quick_complete");
     assert.equal(r.json.provider, "public_rpc");

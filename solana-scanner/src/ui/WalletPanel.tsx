@@ -21,12 +21,12 @@ export function WalletPanel({ state, onchainReady, onAnalyze }: { state: WalletS
           </button>{" "}
           <span className="muted small-text">
             {onchainReady
-              ? "≈ 2 min : le RPC Solana gratuit sert environ une transaction par seconde."
+              ? "≈ 2 min · historiques des wallets servis par le backend local (npm run server)."
               : "Disponible après l'analyse on-chain (pipeline : on-chain d'abord, wallets ensuite)."}
           </span>
         </p>
       )}
-      {state?.status === "loading" && <p className="muted">Analyse des acheteurs en cours (RPC public, ≈ 1 transaction/s)…</p>}
+      {state?.status === "loading" && <p className="muted">Analyse des acheteurs en cours (historiques via le backend local)…</p>}
       {state?.status === "error" && (
         <p className="warn-text">
           Analyse impossible : {state.error}{" "}
@@ -44,8 +44,18 @@ function WalletIntelView({ intel }: { intel: WalletIntel }) {
   const [open, setOpen] = useState<string | null>(null);
   const selected = intel.tracked.find((t) => t.address === open) ?? null;
   const s = intel.scan;
+  const d = intel.diagnostics;
+  const failed = d.walletsPartial + d.walletsSkipped;
+  const kinds = Object.entries(d.failureKinds).map(([k, n]) => `${k} ×${n}`).join(", ");
   return (
     <>
+      {intel.analysisStatus !== "complete" && (
+        <p className="warn-text">
+          Historiques {intel.analysisStatus === "failed" ? "indisponibles" : "partiels"} : {failed} wallet(s) sur {d.walletsAttempted} sans historique complet
+          {kinds ? ` (${kinds})` : ""}. Les données manquantes restent UNKNOWN ; aucun PnL n'est estimé pour elles.
+          {d.failureKinds.network ? " Le backend d'historique (npm run server) ne répond pas." : ""}
+        </p>
+      )}
       <div className="detail-scores">
         <div>
           <span className="muted">Tracked wallets</span>
@@ -117,9 +127,14 @@ function WalletIntelView({ intel }: { intel: WalletIntel }) {
                   <td>
                     <code>{shortAddress(t.address)}</code>
                     {t.profile.flags.length > 0 && <span className="anomaly-count"> ⚑ {t.profile.flags.length}</span>}
+                    {t.selectionSource !== "buyer" && (
+                      <div className="muted small-text" title={t.structuralReasons.join(", ")}>
+                        {t.selectionSource === "structural" ? "structurel (Step 3)" : "acheteur + structurel"}
+                      </div>
+                    )}
                   </td>
                   <td>
-                    {t.entryMinutesAfterLaunch === null ? "?" : `+${mins(t.entryMinutesAfterLaunch)}`}
+                    {t.firstBuy === null ? "pas d'achat observé" : t.entryMinutesAfterLaunch === null ? "?" : `+${mins(t.entryMinutesAfterLaunch)}`}
                     {t.sameSlotAsLaunch && <div className="warn-text small-text">même bloc que la création</div>}
                   </td>
                   <td className="num">

@@ -27,19 +27,51 @@ export function isSolanaAddress(s: string): boolean {
   return bytes + zeros === 32;
 }
 
-export type Mode = "quick" | "deep";
+export type Mode = "quick" | "deep" | "completion";
 
-export type ParsedQuery = { ok: true; address: string; mode: Mode } | { ok: false; error: "invalid_address" | "invalid_mode" | "unknown_parameter" };
+export type ParsedQuery =
+  | { ok: true; address: string; mode: "quick" | "deep" }
+  | { ok: true; address: string; mode: "completion"; cursor: string; pages: number }
+  | { ok: false; error: "invalid_address" | "invalid_mode" | "unknown_parameter" | "invalid_cursor" | "invalid_pages" };
 
 const ALLOWED = new Set(["address", "mode"]);
+const COMPLETION_ALLOWED = new Set(["address", "mode", "cursor", "pages"]);
+const B58_SIG = /^[1-9A-HJ-NP-Za-km-z]{64,90}$/;
+const GTFA_POSITION = /^\d{1,20}:\d{1,10}$/;
 
-export function parseQuery(params: URLSearchParams): ParsedQuery {
-  for (const k of params.keys()) if (!ALLOWED.has(k)) return { ok: false, error: "unknown_parameter" };
-  const addresses = params.getAll("address");
+/**
+ * A page cursor produced by this server: "sig:<base58 signature>" or
+ * "gtfa:<slot>:<position>". Anything else is refused (no free-form input
+ * reaches a provider).
+ */
+export function isHistoryCursor(s: string): boolean {
+  if (s.length > 120) return false;
+  if (s.startsWith("sig:")) return B58_SIG.test(s.slice(4));
+  if (s.startsWith("gtfa:")) return GTFA_POSITION.test(s.slice(5));
+  return false;
+}
+
+/**
+ * quick: address + mode. deep: address + mode (access checked separately).
+ * completion (QUICK completion from the browser): address + mode + cursor,
+ * optional pages in [1, maxCompletionPages]; every other budget is server-side.
+ */
+export function parseQuery(params: URLSearchParams, o: { maxCompletionPages: number } = { maxCompletionPages: 2 }): ParsedQuery {
   const modes = params.getAll("mode");
+  const mode = modes.length === 1 ? modes[0] : null;
+  const allowed = mode === "completion" ? COMPLETION_ALLOWED : ALLOWED;
+  for (const k of params.keys()) if (!allowed.has(k)) return { ok: false, error: "unknown_parameter" };
+  const addresses = params.getAll("address");
   if (addresses.length !== 1 || !isSolanaAddress(addresses[0])) return { ok: false, error: "invalid_address" };
-  if (modes.length !== 1 || (modes[0] !== "quick" && modes[0] !== "deep")) return { ok: false, error: "invalid_mode" };
-  return { ok: true, address: addresses[0], mode: modes[0] };
+  if (mode !== "quick" && mode !== "deep" && mode !== "completion") return { ok: false, error: "invalid_mode" };
+  if (mode !== "completion") return { ok: true, address: addresses[0], mode };
+  const cursors = params.getAll("cursor");
+  if (cursors.length !== 1 || !isHistoryCursor(cursors[0])) return { ok: false, error: "invalid_cursor" };
+  const pagesRaw = params.getAll("pages");
+  if (pagesRaw.length > 1) return { ok: false, error: "invalid_pages" };
+  const pages = pagesRaw.length ? Number(pagesRaw[0]) : o.maxCompletionPages;
+  if (!/^\d+$/.test(pagesRaw[0] ?? "1") || !Number.isInteger(pages) || pages < 1 || pages > o.maxCompletionPages) return { ok: false, error: "invalid_pages" };
+  return { ok: true, address: addresses[0], mode, cursor: cursors[0], pages };
 }
 
 /** Fixed-window counters per client and mode. */
