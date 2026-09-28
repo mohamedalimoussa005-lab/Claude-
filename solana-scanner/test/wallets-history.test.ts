@@ -8,16 +8,14 @@ import { normalizeParsed } from "../src/history/normalize.ts";
 import { PublicRpcHistoryProvider } from "../src/history/publicRpc.ts";
 import { WalletHistoryService } from "../src/history/service.ts";
 import { detectBotSignals } from "../src/wallets/botSignals.ts";
-import { collectWalletFacts, HistoryBudget } from "../src/wallets/collect.ts";
 import type { WalletRpc } from "../src/wallets/collect.ts";
-import { compareIntel } from "../src/wallets/compare.ts";
 import { WALLET_CONFIG } from "../src/wallets/config.ts";
 import { collectTokenWalletsFromHistory, collectWalletFactsFromHistory, DeepBudget } from "../src/wallets/historyFacts.ts";
 import { buildIntel } from "../src/wallets/intel.ts";
 import type { Buyer } from "../src/wallets/intel.ts";
 import { profileWallet } from "../src/wallets/profile.ts";
 import type { ProfileContext } from "../src/wallets/profile.ts";
-import type { TokenScan, WalletFacts } from "../src/wallets/types.ts";
+import type { TokenScan } from "../src/wallets/types.ts";
 
 const key = (n: number) => base58Encode(new Uint8Array(32).fill(n));
 const PUMP = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
@@ -151,10 +149,6 @@ test("A: 401 transactions with a complete history are analysed (no 150 limit)", 
   assert.equal(p.metrics?.evaluated, 200);
   assert.ok(p.metrics!.profitable > 0 && p.metrics!.losing > 0, "win/loss computed from closed positions");
   assert.equal(p.confidence, "HIGH", "existing threshold (≥ 25 positions, complete) unchanged");
-
-  // Old path on the same wallet: > 150 signatures → no trades.
-  const old = await collectWalletFacts(fakeRpc(), A, new HistoryBudget(1000), WALLET_CONFIG);
-  assert.equal(old.trades, null);
 });
 
 // ─── B: 80 tx, incomplete ────────────────────────────────────────────────
@@ -283,42 +277,27 @@ test("no network: everything above ran on the offline RPC", () => {
   assert.ok(wallets.size >= 10);
 });
 
-// ─── OLD vs NEW ──────────────────────────────────────────────────────────
+// ─── token level ─────────────────────────────────────────────────────────
 
-test("OLD vs NEW on the same fixtures: what each path can establish (no score change)", async () => {
+test("token level on the same fixtures: what the history layer establishes (no score change)", async () => {
   const picks = [A, B, C, E, F];
   const scan: TokenScan = { mint: MINT, launch: { time: T0 * 1000, slot: 1, signature: "launch" }, signaturesScanned: 10, launchReachable: true, transactionsFetched: 10, transactionsFailed: 0, undecodable: 0, earlyTrades: [], recentTrades: [], supply: 1_000_000_000, solUsd: null };
   const buyers: Buyer[] = picks.map((a, i) => ({ address: a, firstBuy: { signature: `b${i}`, slot: 2, time: (T0 + i) * 1000, owner: a, mint: MINT, side: "buy", tokenAmount: 1, sol: 1 }, entryMinutesAfterLaunch: 0, sameSlotAsLaunch: false, entryMcapSol: null, entryMcapUsdEst: null, buys: 1, solSpent: 1, sells: 0, solReceived: 0, currentPct: null }));
   const ictx = { creator: CREATOR, creatorFunder: null, holdersPct: null, excluded: () => false, launchTimes: {}, pricesSol: {}, now: (T0 + 30 * 24 * HOUR) * 1000 };
 
-  const rpcOld = fakeRpc();
-  const budget = new HistoryBudget(WALLET_CONFIG.history.maxHistoryTransactionsPerRun);
-  const oldFacts: WalletFacts[] = [];
-  for (const a of picks) oldFacts.push(await collectWalletFacts(rpcOld, a, budget, WALLET_CONFIG));
-  // As the old service does: the creator's funder from its (bounded) RPC history.
-  const oldCreatorFunder = (await collectWalletFacts(rpcOld, CREATOR, new HistoryBudget(0), WALLET_CONFIG)).funder;
-  const oldIntel = buildIntel(scan, buyers, oldFacts, { ...ictx, creatorFunder: oldCreatorFunder });
-
-  const rpcNew = fakeRpc();
-  const fresh = await collectTokenWalletsFromHistory(historyFor(rpcNew), { picks, creator: CREATOR, mint: MINT, supply: 1_000_000_000, deepAllowed: true });
-  const newIntel = { ...buildIntel(scan, buyers, fresh.facts, { ...ictx, creatorFunder: fresh.creatorFacts?.funder ?? null }), creatorDistribution: fresh.distribution };
-
-  const rows = Object.fromEntries(compareIntel(oldIntel, newIntel).map((r) => [r.metric, [r.old, r.new]]));
-  assert.deepEqual(rows.walletsAnalyzed, [5, 5]);
-  assert.deepEqual(rows.historyComplete, [2, 3], "OLD: E, F (≤ 150); NEW: A too (401 tx, DEEP complete)");
-  assert.deepEqual(rows.positionsReconstructed, [4, 204]);
-  assert.deepEqual(rows.realizedPositions, [3, 203]);
-  assert.deepEqual(rows.botSignals, [2, 2], "B and C: ≥ 5,000 signatures (old) / lower bound + behaviour (new)");
-  assert.deepEqual(rows.walletAgeKnown, [3, 3]);
-  assert.deepEqual(rows.fundingKnown, [3, 3]);
-  assert.deepEqual(rows.confidenceInputsAvailable, [0, 1]);
-  assert.deepEqual(rows.creatorLinks, [3, 3], "A, E, F share the creator's funder on both paths");
-  assert.equal(newIntel.creatorDistribution?.transfers, 5);
-  assert.equal(oldCreatorFunder, fresh.creatorFacts?.funder, "same creator funder on both paths");
-  // Wallet Quality / Confidence formulas untouched: E's profile is identical on both paths.
-  const oe = oldIntel.tracked.find((t) => t.address === E)!.profile;
-  const ne = newIntel.tracked.find((t) => t.address === E)!.profile;
-  assert.equal(oe.quality, ne.quality);
-  assert.equal(oe.confidence, ne.confidence);
-  assert.deepEqual(oe.flags.map((x) => x.key), ne.flags.map((x) => x.key));
+  const fresh = await collectTokenWalletsFromHistory(historyFor(fakeRpc()), { picks, creator: CREATOR, mint: MINT, supply: 1_000_000_000, deepAllowed: true });
+  const intel = { ...buildIntel(scan, buyers, fresh.facts, { ...ictx, creatorFunder: fresh.creatorFacts?.funder ?? null }), creatorDistribution: fresh.distribution };
+  const tr = intel.tracked;
+  const positions = tr.flatMap((t) => t.profile.metrics?.positions ?? []);
+  assert.equal(tr.length, 5);
+  assert.equal(tr.filter((t) => t.profile.facts.trades !== null).length, 3, "E, F and A (401 tx, DEEP complete)");
+  assert.equal(positions.length, 204);
+  assert.equal(positions.filter((p) => p.realizedPnlSol !== null).length, 203);
+  assert.equal(tr.filter((t) => t.profile.flags.some((f) => f.key === "busy")).length, 2, "B and C: lower bound + behaviour");
+  assert.equal(tr.filter((t) => t.profile.facts.firstSeen !== null).length, 3);
+  assert.equal(tr.filter((t) => t.profile.facts.funder !== null).length, 3);
+  assert.equal(tr.filter((t) => t.profile.confidence !== "LOW").length, 1, "only A has enough complete positions");
+  assert.equal(tr.filter((t) => t.profile.flags.some((f) => ["creator", "fundedByCreator", "sameFunderAsCreator"].includes(f.key))).length, 3, "A, E, F share the creator's funder");
+  assert.equal(intel.creatorDistribution?.transfers, 5);
+  assert.ok(fresh.creatorFacts?.funder, "creator funder established from its history");
 });

@@ -17,7 +17,7 @@ export interface TokenTransfer {
 }
 
 /** Stage of a wallet analysis that could not be completed (step 4.2b). */
-export type WalletStage = "signatures" | "funding" | "history" | "creator" | "funder_check";
+export type WalletStage = "history" | "creator" | "funder_check";
 
 /** Why part of a wallet's facts is UNKNOWN. Codes only: never an upstream message, never a scoring input. */
 export interface WalletFailure {

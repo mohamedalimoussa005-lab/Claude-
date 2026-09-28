@@ -2,8 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { base58Encode } from "../src/onchain/base58.ts";
 import type { ParsedTransaction } from "../src/onchain/rpc.ts";
-import { collectWalletFacts, HistoryBudget, tradesInTx } from "../src/wallets/collect.ts";
-import type { WalletRpc } from "../src/wallets/collect.ts";
+import { tradesInTx } from "../src/wallets/collect.ts";
 import { WALLET_CONFIG } from "../src/wallets/config.ts";
 import { aggregateBuyers, buildIntel, shortlist } from "../src/wallets/intel.ts";
 import { buildPositions, computeMetrics, profileWallet } from "../src/wallets/profile.ts";
@@ -205,29 +204,3 @@ test("shortlist mixes earliest and largest buyers; dust buys are ignored", () =>
   assert.deepEqual(sl, [key(80), key(82)]);
 });
 
-// ─── collection with a fake RPC ──────────────────────────────────────────
-
-test("wallet facts: complete small history reconstructed; long history left UNKNOWN; RPC failure propagates", async () => {
-  const sigs = [{ signature: "b", blockTime: min(10) / 1000, err: null }, { signature: "a", blockTime: min(0) / 1000, err: null }];
-  const txs: Record<string, ParsedTransaction> = {
-    a: swapTx({ owner: W, mint: MINT, tokenDelta: 1_000_000n, lamportDelta: -1e9, time: min(0), sig: "a" }),
-    b: swapTx({ owner: W, mint: MINT, tokenDelta: -1_000_000n, lamportDelta: 2e9, time: min(10), sig: "b" }),
-  };
-  const rpc: WalletRpc = { url: "fake", getSignatures: async () => sigs, getTransaction: async (s: string) => txs[s] } as WalletRpc;
-  const f = await collectWalletFacts(rpc, W, new HistoryBudget(10));
-  assert.equal(f.historyComplete, true);
-  assert.equal(f.trades!.length, 2);
-
-  const busy: WalletRpc = { url: "fake", getSignatures: async () => Array.from({ length: 1000 }, (_, i) => ({ signature: `x${i}`, blockTime: 1, err: null })), getTransaction: async () => null } as WalletRpc;
-  const g = await collectWalletFacts(busy, W, new HistoryBudget(10));
-  assert.equal(g.trades, null);
-  assert.equal(g.historyComplete, false);
-  assert.match(g.historyNote, /trop long/);
-
-  const noBudget = await collectWalletFacts(rpc, W, new HistoryBudget(0));
-  assert.equal(noBudget.trades, null);
-  assert.match(noBudget.historyNote, /budget/);
-
-  const down: WalletRpc = { url: "fake", getSignatures: async () => { throw new Error("RPC down"); }, getTransaction: async () => null } as WalletRpc;
-  await assert.rejects(collectWalletFacts(down, W, new HistoryBudget(10)), /RPC down/);
-});

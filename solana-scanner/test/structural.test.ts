@@ -12,14 +12,13 @@ import { profileWallet } from "../src/wallets/profile.ts";
 import { WalletIntelService } from "../src/wallets/service.ts";
 import { compareStep3Step4, selectStructuralWallets } from "../src/wallets/structural.ts";
 import type { Step3Facts } from "../src/wallets/structural.ts";
-import { createServerWalletIntelService, DEFAULT_HISTORY_PATH, parseHistoryPathArgs } from "../src/wallets/server/historyPath.ts";
+import { createServerWalletIntelService } from "../src/wallets/server/walletIntel.ts";
 
 import { CREATOR, H, HOUR, key, T0, W, world } from "./helpers/world.ts";
 
 import { dex, row } from "./helpers/world.ts";
-const newPath = () => ({ history: ({ rpc: g }: { rpc: WalletRpc }) => new WalletHistoryService({ providers: [new PublicRpcHistoryProvider(g, HISTORY_CONFIG.publicRpc)] }) });
-const runNew = (w: ReturnType<typeof world>) => new WalletIntelService(w.rpc, dex, WALLET_CONFIG, newPath()).analyze(row, w.onchain);
-const runOld = (w: ReturnType<typeof world>) => new WalletIntelService(w.rpc, dex, WALLET_CONFIG).analyze(row, w.onchain);
+const historyLayer = () => ({ history: ({ rpc: g }: { rpc: WalletRpc }) => new WalletHistoryService({ providers: [new PublicRpcHistoryProvider(g, HISTORY_CONFIG.publicRpc)] }) });
+const run = (w: ReturnType<typeof world>) => new WalletIntelService(w.rpc, dex, WALLET_CONFIG, historyLayer()).analyze(row, w.onchain);
 const tw = (intel: WalletIntel, a: string) => intel.tracked.find((t) => t.address === a)!;
 
 // Step 3 facts for the pure selection tests.
@@ -36,9 +35,10 @@ const none = () => false;
 
 // ─── A: 8 buyers + a Step 3 cluster of 3 absent from the buyers ──────────
 
-test("A: 8 buyers + Step 3 cluster of 3 non-buyers → 11 wallets analysed (NEW and OLD), provenance recorded", async () => {
+test("A: 8 buyers + Step 3 cluster of 3 non-buyers → 11 wallets analysed, provenance recorded", async () => {
   const w = world();
-  for (const intel of [await runNew(w), await runOld(world())]) {
+  {
+    const intel = await run(w);
     assert.equal(intel.tracked.length, 11);
     assert.equal(intel.selection?.buyersShortlisted, 8);
     assert.equal(intel.selection?.structuralCandidates, 3);
@@ -57,7 +57,7 @@ test("A: 8 buyers + Step 3 cluster of 3 non-buyers → 11 wallets analysed (NEW 
     }
     assert.equal(intel.buyersIdentified, 8, "structural wallets are not counted as buyers");
   }
-  const intel = await runNew(w);
+  const intel = await run(w);
   assert.equal(intel.source, "history");
   assert.ok(intel.selection!.historyStepsBySelectionSource!.structural > 0);
   assert.equal(intel.historyProviders?.primarySuccess, 0);
@@ -67,7 +67,7 @@ test("A: 8 buyers + Step 3 cluster of 3 non-buyers → 11 wallets analysed (NEW 
 // ─── B: structural wallet already a buyer ────────────────────────────────
 
 test("B: a structural wallet already shortlisted is deduplicated → buyer_and_structural, no extra slot used", async () => {
-  const intel = await runNew(world({ w0InGroup: true }));
+  const intel = await run(world({ w0InGroup: true }));
   assert.equal(intel.selection?.structuralCandidates, 4);
   assert.equal(intel.selection?.deduplicatedCandidates, 1);
   assert.equal(intel.selection?.structuralAnalyzed, 3);
@@ -165,7 +165,7 @@ test("F: deployment-funded wallet is a structural candidate ahead of a larger st
 // ─── G: incomplete structural wallet stays neutral ───────────────────────
 
 test("G: structural wallet with an incomplete history → UNKNOWN, no metrics, no malus from its selection", async () => {
-  const intel = await runNew(world({ h2Long: true }));
+  const intel = await run(world({ h2Long: true }));
   const h2 = tw(intel, H[2]);
   assert.equal(h2.selectionSource, "structural");
   const p = h2.profile;
@@ -185,7 +185,7 @@ test("G: structural wallet with an incomplete history → UNKNOWN, no metrics, n
 // ─── H: cluster adjustment ───────────────────────────────────────────────
 
 test("H: 3 related structural wallets count as one independent cluster", async () => {
-  const intel = await runNew(world());
+  const intel = await run(world());
   assert.equal(intel.tracked.length, 11);
   const clusters = new Set(H.map((h) => tw(intel, h).cluster));
   assert.equal(clusters.size, 1, "one cluster for the three");
@@ -196,7 +196,7 @@ test("H: 3 related structural wallets count as one independent cluster", async (
 // ─── I / J: Step 3 ↔ Step 4 comparison ───────────────────────────────────
 
 test("I: Step 3 strong sharedTx + Step 4 sees the same transactions → confirmed (Step 4's own evidence)", async () => {
-  const intel = await runNew(world());
+  const intel = await run(world());
   const cmp = intel.step3Comparison!;
   const shared = cmp.filter((c) => c.step3.type === "sharedTx");
   assert.equal(shared.length, 3);
@@ -205,7 +205,7 @@ test("I: Step 3 strong sharedTx + Step 4 sees the same transactions → confirme
 });
 
 test("J: Step 4 history too short to see the shared transaction → unknown, never disproved; Step 4 adds no link from Step 3", async () => {
-  const intel = await runNew(world({ h2Long: true }));
+  const intel = await run(world({ h2Long: true }));
   const withH2 = intel.step3Comparison!.filter((c) => c.step3.type === "sharedTx" && (c.step3.a === H[2] || c.step3.b === H[2]));
   assert.equal(withH2.length, 2);
   for (const c of withH2) {
@@ -224,36 +224,28 @@ test("J: Step 4 history too short to see the shared transaction → unknown, nev
   assert.match(pure[0].note, /pas une réfutation/);
 });
 
-// ─── K / L: NEW default, OLD explicit ────────────────────────────────────
+// ─── K / L: single history path ──────────────────────────────────────────
 
-test("K: NEW history path is the default for backend scripts", async () => {
-  assert.equal(DEFAULT_HISTORY_PATH, "new");
-  assert.deepEqual(parseHistoryPathArgs([]), { path: "new", deep: false });
-  assert.deepEqual(parseHistoryPathArgs(["--history"]), { path: "new", deep: false }, "former opt-in flag still accepted");
-  assert.deepEqual(parseHistoryPathArgs(["--deep"]), { path: "new", deep: true });
+test("K: the server factory builds Wallet Intelligence on the history layer; DEEP only when asked", async () => {
   const w = world();
-  const { service, path, heliusEnabled } = createServerWalletIntelService({ rpc: w.rpc as any, dex, env: {} });
-  assert.equal(path, "new");
+  const { service, heliusEnabled } = createServerWalletIntelService({ rpc: w.rpc as any, dex, env: {} });
   assert.equal(heliusEnabled, false, "no key in this env: public RPC history only");
+  assert.equal(service.deepAllowed, false);
+  assert.equal(createServerWalletIntelService({ rpc: w.rpc as any, dex, env: {}, deep: true }).service.deepAllowed, true);
   const intel = await service.analyze(row, w.onchain);
   assert.equal(intel.source, "history");
   assert.equal(intel.tracked.length, 11);
 });
 
-test("L: OLD history path stays explicitly invocable", async () => {
-  assert.deepEqual(parseHistoryPathArgs(["--old-history"]), { path: "old", deep: false });
-  assert.deepEqual(parseHistoryPathArgs(["--old-history", "--deep"]), { path: "old", deep: false }, "DEEP is a NEW-path option");
+test("L: WalletIntelService cannot be built without a history layer (no other path, no silent fallback)", () => {
   const w = world();
-  const { service, path } = createServerWalletIntelService({ rpc: w.rpc as any, dex, env: {}, path: "old" });
-  assert.equal(path, "old");
-  const intel = await service.analyze(row, w.onchain);
-  assert.equal(intel.source, "rpc");
-  assert.equal(intel.tracked.length, 11);
+  assert.throws(() => new WalletIntelService(w.rpc, dex, WALLET_CONFIG, undefined as any), /history layer/);
+  assert.throws(() => new WalletIntelService(w.rpc, dex, WALLET_CONFIG, {} as any), /history layer/);
 });
 
 test("bridge disabled (maxWallets 0) → buyers only, as before", async () => {
   const w = world();
-  const intel = await new WalletIntelService(w.rpc, dex, { ...WALLET_CONFIG, structural: { ...WALLET_CONFIG.structural, maxWallets: 0 } }, newPath()).analyze(row, w.onchain);
+  const intel = await new WalletIntelService(w.rpc, dex, { ...WALLET_CONFIG, structural: { ...WALLET_CONFIG.structural, maxWallets: 0 } }, historyLayer()).analyze(row, w.onchain);
   assert.equal(intel.tracked.length, 8);
   assert.equal(intel.selection?.structuralSkipped, 3);
   assert.ok(intel.tracked.every((t) => t.selectionSource === "buyer"));

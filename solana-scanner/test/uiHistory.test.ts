@@ -65,8 +65,7 @@ test("A/B: UI history client calls the backend NEW route for buyers and structur
   const b = await backend([new PublicRpcHistoryProvider(w.rpc, HISTORY_CONFIG.publicRpc)]);
   try {
     const before = walletTargets(w);
-    const { intel, urls, service } = await viaUi(w, b.base);
-    assert.equal(service.historyPath, "history");
+    const { intel, urls } = await viaUi(w, b.base);
     assert.equal(intel.source, "history");
     assert.equal(intel.tracked.length, 11);
     assert.ok(urls.length > 0);
@@ -77,7 +76,7 @@ test("A/B: UI history client calls the backend NEW route for buyers and structur
       assert.ok(tw(intel, h).profile.facts.trades !== null, "history served by the backend");
     }
     // Wallet histories came through the backend (whose offline provider shares this fake chain);
-    // the only wallet-level RPC reads are the backend's, never the OLD per-wallet path from the browser.
+    // the only wallet-level RPC reads are the backend's, never per-wallet RPC history from the browser.
     assert.ok(walletTargets(w) > before);
     assert.equal(intel.analysisStatus, "complete");
   } finally {
@@ -129,13 +128,12 @@ test("D/G: incomplete history stays UNKNOWN (no PnL), DEEP never requested, QUIC
 test("G: the normal UI flow builds Wallet Intelligence with DEEP off", () => {
   const w = world();
   const s = createBrowserWalletIntelService(w.rpc, dex);
-  assert.equal(s.historyPath, "history");
   assert.equal(s.deepAllowed, false);
 });
 
 // ─── E / F: backend unavailable ──────────────────────────────────────────
 
-test("E/F: backend unreachable → wallets UNKNOWN, no OLD path, no browser-side Helius or per-wallet RPC; fails fast after the first refusal", async () => {
+test("E/F: backend unreachable → wallets UNKNOWN, no other history path, no browser-side Helius or per-wallet RPC; fails fast after the first refusal", async () => {
   const w = world();
   // A port with nothing listening.
   const b = await backend([]);
@@ -146,7 +144,7 @@ test("E/F: backend unreachable → wallets UNKNOWN, no OLD path, no browser-side
   assert.equal(intel.source, "history");
   assert.equal(urls.length, 1, "one refused request, then fail-fast for the rest of the run");
   assert.ok(urls.every((u) => !/helius/i.test(u)));
-  assert.equal(walletTargets(w), before, "no OLD per-wallet RPC history from the browser");
+  assert.equal(walletTargets(w), before, "no per-wallet RPC history from the browser");
   assert.equal(intel.analysisStatus, "partial");
   assert.equal(intel.tracked.length, 11);
   for (const t of intel.tracked) {

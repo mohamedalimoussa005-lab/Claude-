@@ -17,7 +17,7 @@ npm run dev          # interface seule (Wallet Intelligence : historiques UNKNOW
 npm run test:live    # test réel de tous les endpoints (nécessite l'accès réseau à api.dexscreener.com)
 npm run score:live   # scan réel + top 10 par Opportunity Score, détail des points et anomalies (-- 20 pour un top 20)
 npm run onchain:live # scan réel → sélection des candidats → analyse on-chain (RPC Solana public), DEX et on-chain côte à côte
-npm run wallets:live # + wallet intelligence (historiques NEW par défaut ; -- --old-history pour l'ancien chemin RPC)
+npm run wallets:live # + wallet intelligence sur les candidats (historiques via WalletHistoryService ; -- 1 --deep pour autoriser un DEEP sélectif)
 npm test             # tests unitaires hors ligne (normalisation, rate limit, retries, pipeline, scoring)
 npm run typecheck
 ```
@@ -223,16 +223,17 @@ trading, aucun wallet utilisateur. Une adresse n'est pas une personne ; aucun wa
 | Première transaction d'un token | atteinte pour un token jeune (≈ 5 000–25 000 signatures) ; hors de portée au-delà du budget (25 pages) |
 | Historique des premiers acheteurs | sur un échantillon, 9/15 avaient ≥ 5 000 transactions (bots / snipers) et 5/15 étaient créés le jour même |
 
-Conséquence : reconstruire l'historique complet de swaps et le PnL d'un wallet actif coûterait plus d'une heure
-d'appels **par wallet** sans garantie d'atteindre son début. Le module ne fait donc **aucune reconstruction partielle** :
+Conséquence : reconstruire l'historique d'un wallet actif sur ce RPC coûterait plus d'une heure d'appels **par
+wallet**. Les historiques de wallets passent donc par la couche historique (étapes 4.1 / 4.2, Helius-first) ; le RPC
+public ne sert plus qu'au scan du token. Aucune **reconstruction partielle** :
 - côté token (vérifiable) : premiers et derniers acheteurs décodés depuis les soldes avant/après de chaque
   transaction (seuls les signataires sont des traders ; transferts, routes multi-tokens et quotes non-SOL sont
   ignorés, pas devinés), délai d'entrée après la première transaction, montant en SOL, market cap d'entrée
   (prix d'exécution × offre, USD estimé au prix SOL actuel), achats du deployment-associated wallet, acheteurs
   dans le bloc de création ;
-- côté wallet : taille d'historique (5 pages max), financement initial, liens (réutilise les heuristiques de
-  l'étape 3), et historique de trades **seulement s'il est complet** (≤ 150 transactions, budget 300 transactions
-  par session). Sinon trades, PnL, rendements, entrées précoces et durée de détention restent UNKNOWN.
+- côté wallet (couche historique) : activité récente, origine, financement initial, liens (heuristiques de
+  l'étape 3), et historique de trades **seulement s'il est complet**. Sinon trades, PnL, rendements, entrées précoces
+  et durée de détention restent UNKNOWN.
 - non calculable sans source de prix : multiple maximum après l'entrée (pas d'OHLCV via RPC).
 
 ### Faux « smart wallets »
@@ -252,12 +253,24 @@ historique complet, MEDIUM ≥ 10, sinon LOW.
 ### Pipeline
 
 DEX candidates → on-chain validation → (à la demande) wallet discovery sur le token → shortlist (8 wallets :
-premiers acheteurs puis plus gros) → faits par wallet et historique borné. Cache RPC + limiteurs.
+premiers acheteurs puis plus gros) + jusqu'à 3 wallets structurels de l'étape 3 → faits par wallet depuis la couche
+historique. Cache RPC + limiteurs.
+
+Un seul chemin d'historique de wallets :
+
+```
+Navigateur : WalletIntelService → HttpHistorySource → backend /api/wallet-history → WalletHistoryService
+Scripts / serveur : WalletIntelService → WalletHistoryService (createServerWalletIntelService)
+WalletHistoryService → Helius PRIMARY (getTransactionsForAddress) → Helius enhanced (fallback) → RPC public
+```
+
+`WalletIntelService` exige cette couche (`options.history`) : sans elle, il refuse de se construire ; il n'existe
+aucun autre chemin ni repli.
 
 ## Étape 4.1 : accès aux historiques de wallets (Helius-first + fallback RPC)
 
 Code : `src/history/` (config dans [`src/history/config.ts`](src/history/config.ts)). Couche d'accès uniquement :
-aucun score modifié ou ajouté, pas encore branchée sur l'étape 4. Rien ne s'exécute dans le navigateur.
+aucun score modifié ou ajouté. Les providers ne s'exécutent jamais dans le navigateur.
 
 | Chemin | Détail |
 |---|---|
@@ -274,9 +287,8 @@ aucun score modifié ou ajouté, pas encore branchée sur l'étape 4. Rien ne s'
 **Clé Helius** : lue uniquement par `src/history/server/heliusEnv.ts` (`HELIUS_API_KEY`, jamais `VITE_*`), gardée dans un
 champ privé, placée seulement dans l'URL de la requête sortante, masquée de toute erreur et de tout log, jamais sérialisée.
 Le provider refuse de s'instancier dans un navigateur ; aucun fichier de `src/ui` ne l'importe (vérifié par les tests) ;
-`.env` est ignoré par git. L'application actuelle étant 100 % frontend (Vite), il faut une petite couche serveur
-(fonction serverless ou route Node) qui appelle `createServerHistoryService({ env: process.env, rpc })` et renvoie
-au navigateur des transactions normalisées, jamais la clé ni une URL Helius.
+`.env` est ignoré par git. Le navigateur passe par le backend local ci-dessous, qui renvoie des transactions
+normalisées, jamais la clé ni une URL Helius.
 
 ### Backend local : `GET /api/wallet-history`
 
@@ -291,8 +303,8 @@ npm run dev      # dans un autre terminal : Vite transmet /api au backend
 L'interface utilise ce backend pour **tous** les historiques de wallets de Wallet Intelligence
 (`src/history/httpSource.ts` → `/api/wallet-history`, via `createBrowserWalletIntelService`) : mêmes modules que les
 scripts (acheteurs + wallets structurels Step 3, QUICK, complétion QUICK, bot, relations, clusters, Quality /
-Confidence), DEEP jamais demandé. Backend absent → historiques UNKNOWN et bandeau d'avertissement, sans repli sur
-l'ancien chemin RPC ni appel Helius depuis le navigateur. Le scan du token et l'analyse on-chain (Step 3) restent sur
+Confidence), DEEP jamais demandé. Backend absent → historiques UNKNOWN et bandeau d'avertissement, sans autre
+chemin ni appel Helius depuis le navigateur. Le scan du token et l'analyse on-chain (Step 3) restent sur
 le RPC public via `/solana-rpc`.
 
 Variables **serveur uniquement** (fichier `.env`, ignoré par git ; jamais de `VITE_*`) : `HELIUS_API_KEY` (optionnelle,
@@ -315,22 +327,21 @@ sinon RPC public), `WALLET_HISTORY_DEEP_TOKEN` (optionnelle, sinon DEEP désacti
 
 ## Étape 4.2 : Wallet Intelligence sur WalletHistoryService
 
-Code : `src/wallets/historyFacts.ts`, `botSignals.ts`, `compare.ts`. `WalletIntelService` reçoit la couche historique
-par injection (`options.history`, une instance par token) ; sans elle, le chemin RPC de l'étape 4 reste utilisé tel quel.
-L'UI ne construit jamais Helius. Aucune formule de Wallet Quality ni aucun seuil de Confidence ne change.
+Code : `src/wallets/historyFacts.ts`, `botSignals.ts`, `server/walletIntel.ts`, `browserService.ts`.
+`WalletIntelService` reçoit la couche historique par injection (`options.history`, obligatoire, une instance par
+token). L'UI ne construit jamais Helius. Aucune formule de Wallet Quality ni aucun seuil de Confidence ne change.
 
 | Point | Règle |
 |---|---|
 | Collecte | QUICK d'abord (activité récente + origine). DEEP seulement si l'historique est incomplet, que le wallet n'est pas clairement un bot, que son historique peut tenir dans le budget DEEP (2 000 transactions), et au plus 8 wallets par token ; désactivé par défaut (`deep: true` pour l'autoriser) |
-| Limite des 150 transactions | supprimée sur ce chemin : trades, positions, PnL réalisé et win rate existent si et seulement si l'historique est **complet** (page récente couvrant tout l'historique, ou DEEP terminé), quelle que soit sa longueur |
+| Complétude | trades, positions, PnL réalisé et win rate existent si et seulement si l'historique est **complet** (page récente couvrant tout l'historique, complétion QUICK arrivée au bout, ou DEEP terminé), quelle que soit sa longueur |
 | UNKNOWN | origine non trouvée → âge et financement UNKNOWN (listés dans `unknowns`), jamais un signal négatif ; historique incomplet → pas de trades inventés. `signatureCount` devient une borne inférieure quand l'historique est incomplet |
 | Bot / haute fréquence | depuis les transactions normalisées : transactions/min, achats revendus en ≤ 60 s, reventes de la quantité exacte, nombre de tokens, tickets (seuils dans `WALLET_CONFIG.bot`). Alimente le flag existant « Activité de type bot / haute fréquence » (même sévérité, même pénalité) |
 | Transferts | classés TRANSFER depuis les soldes (jamais le type Helius), conservés avec leurs contreparties ; jamais BUY/SELL |
 | Distribution du créateur | transferts du deployment wallet vers d'autres wallets (nombre, destinataires, % de l'offre), destinataires suivis, et reventes observées chez 5 destinataires au plus |
 | Positions | entrée, sortie, durée de détention, SOL dépensé / reçu, `realizedPnlSol` (sur la part vendue) et `closed` par position. Pas de PnL USD historique, de PnL latent ni de multiple max (pas encore d'historique de prix) |
-| Comparaison | `compareIntel(old, new)` : wallets analysés, historiques complets, positions reconstruites / réalisées, signaux bot, âge et financement connus, liens créateur, entrées de Confidence disponibles. Descriptif uniquement |
 
-`npm run wallets:live -- 1 --history [--deep]` exécute ce chemin côté Node (clé Helius lue uniquement dans ce processus).
+`npm run wallets:live -- 1 [--deep]` l'exécute côté Node (clé Helius lue uniquement dans ce processus).
 
 ### Étape 4.2b : résilience RPC
 
@@ -340,7 +351,7 @@ Code : `src/history/failure.ts`, `src/wallets/resilience.ts`. Aucune formule, p�
 |---|---|
 | Erreurs structurées | `quota_exhausted` (HTTP/RPC 413, « data allowance »…), `rate_limited`, `timeout`, `network`, `method_unavailable`, `invalid_response`, `rpc_error`, `unknown`. Le message amont sert uniquement à classer ; il n'est jamais stocké dans le résultat ni utilisé comme signal |
 | Circuit breaker | `RunRpcGuard`, un par analyse de token : `healthy` → `quota_exhausted` → `unavailable_for_run`. Ensuite les appels au même RPC ne sont plus envoyés (échec immédiat, comptés dans `rpcCallsSkipped`). Timeout / réseau / rate limit ne l'ouvrent pas |
-| Isolation par wallet | ancien et nouveau chemin : un échec rend UNKNOWN les données du wallet concerné (`failure` : code + étapes `signatures` / `funding` / `history`), les données déjà obtenues sont gardées, les wallets suivants continuent. Nouveau chemin : si tous les fournisseurs d'historique ont épuisé leur quota, les wallets restants ne sont pas demandés ; Helius reste utilisé tant qu'il répond |
+| Isolation par wallet | un échec rend UNKNOWN les données du wallet concerné (`failure` : code + étape `history`), les wallets suivants continuent. Si tous les fournisseurs d'historique ont épuisé leur quota, les wallets restants (et le deployment wallet) ne sont pas demandés ; Helius reste utilisé tant qu'il répond |
 | Token-fatal | uniquement si aucune signature du mint ne peut être listée (aucun acheteur identifiable) |
 | Résultat | `analysisStatus` (`complete` / `partial` / `failed`) et `diagnostics` (`walletsAttempted`, `walletsCompleted`, `walletsPartial`, `walletsSkipped`, `failureKinds`, `stages`, `tokenFatal`, `rpcCircuit`, `rpcCallsSkipped`) |
 | UNKNOWN | une panne ne crée aucun flag ni aucune pénalité : Quality identique à celle des mêmes faits sans l'enregistrement de l'échec. Les règles existantes s'appliquent aux données manquantes (dont le flag `incomplete`, inchangé) |

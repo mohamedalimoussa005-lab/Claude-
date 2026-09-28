@@ -83,7 +83,7 @@ export interface SelectionDiagnostics {
   structuralAnalyzed: number;
   /** Eligible wallets left out by the cap. */
   structuralSkipped: number;
-  /** History provider steps (trace) per selection source, history-layer path only. */
+  /** History provider steps (trace) per selection source. */
   historyStepsBySelectionSource?: Record<SelectionSource, number>;
 }
 
@@ -120,8 +120,8 @@ export interface WalletIntel {
   notes: string[];
   analysisStatus: AnalysisStatus;
   diagnostics: IntelDiagnostics;
-  /** Step 4.2 history-layer path only. */
-  source?: "rpc" | "history";
+  /** Always the history layer (the only wallet history path). */
+  source?: "history";
   /** Creator token transfers to other wallets (not sells), when the creator's history was read. */
   creatorDistribution?: CreatorDistribution | null;
   deepRuns?: number;

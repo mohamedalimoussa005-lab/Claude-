@@ -1,33 +1,18 @@
 /**
- * Network side of wallet intelligence (read-only RPC). Budgeted: the public
- * RPC serves ~1 getTransaction per second, so every step has a cap and every
- * cap that is hit is reported instead of papered over.
+ * RPC side of wallet intelligence (read-only): the token scan that discovers
+ * buyers, and the activity check of shared funders. Wallet histories come from
+ * the history layer (historyFacts.ts), never from here. Budgeted: every cap
+ * that is hit is reported instead of papered over.
  */
 
-import { classifyFailure } from "../history/failure.ts";
-import { findFunder } from "../onchain/collect.ts";
 import type { ParsedTransaction, SignatureInfo, SolanaRpc } from "../onchain/rpc.ts";
 import { WALLET_CONFIG } from "./config.ts";
 import type { WalletConfig } from "./config.ts";
 import { decodeTrade, ownersTouching } from "./trades.ts";
 import type { Trade } from "./trades.ts";
-import { addFailure } from "./resilience.ts";
 import type { TokenScan, WalletFacts } from "./types.ts";
 
 export type WalletRpc = Pick<SolanaRpc, "url" | "getSignatures" | "getTransaction">;
-
-/** Shared cap on history transactions for one run. */
-export class HistoryBudget {
-  remaining: number;
-  constructor(n: number) {
-    this.remaining = n;
-  }
-  take(n: number): boolean {
-    if (n > this.remaining) return false;
-    this.remaining -= n;
-    return true;
-  }
-}
 
 function isSigner(tx: ParsedTransaction, address: string): boolean {
   return tx.transaction.message.accountKeys.some((k) => k.pubkey === address && k.signer);
@@ -119,88 +104,6 @@ export async function collectTokenScan(
     supply,
     solUsd,
   };
-}
-
-export async function collectWalletFacts(rpc: WalletRpc, address: string, budget: HistoryBudget, c: WalletConfig = WALLET_CONFIG): Promise<WalletFacts> {
-  const { sigs, complete } = await pageSignatures(rpc, address, c.history.signaturePages);
-  const facts: WalletFacts = {
-    address,
-    signatureCount: sigs.length,
-    historyComplete: complete,
-    firstSeen: null,
-    funder: null,
-    fundingSignature: null,
-    fundingTime: null,
-    funderSignatureCount: null,
-    signatures: sigs.slice(0, 1000).map((s) => s.signature),
-    trades: null,
-    historyNote: "",
-    undecodableTxs: 0,
-  };
-  if (!complete) {
-    facts.historyNote = `≥ ${sigs.length.toLocaleString("en-US")} transactions : historique trop long pour le RPC gratuit (≈ 1 transaction/s)`;
-    return facts;
-  }
-  if (sigs.length === 0) {
-    facts.historyNote = "aucune transaction";
-    return facts;
-  }
-  const oldest = sigs[sigs.length - 1];
-  facts.firstSeen = oldest.blockTime ? oldest.blockTime * 1000 : null;
-  let first: Awaited<ReturnType<WalletRpc["getTransaction"]>> = null;
-  try {
-    first = await rpc.getTransaction(oldest.signature);
-  } catch (e) {
-    // Funding stays UNKNOWN; the rest of the wallet is still analysed.
-    addFailure(facts, "funding", classifyFailure(e));
-  }
-  if (first) {
-    facts.funder = findFunder(first, address, 0.01);
-    if (facts.funder) {
-      facts.fundingSignature = oldest.signature;
-      facts.fundingTime = facts.firstSeen;
-    }
-  }
-
-  const ok = sigs.filter((s) => !s.err);
-  if (sigs.length > c.history.maxSignaturesForFullHistory) {
-    facts.historyNote = `${sigs.length} transactions > seuil de reconstruction complète (${c.history.maxSignaturesForFullHistory})`;
-    return facts;
-  }
-  if (!budget.take(ok.length)) {
-    facts.historyNote = "budget de transactions de la session épuisé";
-    return facts;
-  }
-  const trades: Trade[] = [];
-  for (const s of ok) {
-    let tx: Awaited<ReturnType<WalletRpc["getTransaction"]>>;
-    try {
-      tx = await rpc.getTransaction(s.signature);
-    } catch (e) {
-      const kind = classifyFailure(e);
-      addFailure(facts, "history", kind);
-      facts.historyNote = `historique UNKNOWN : transaction non récupérée (${kind})`;
-      return facts;
-    }
-    if (!tx) {
-      facts.historyNote = `transaction ${s.signature.slice(0, 8)}… introuvable : historique incomplet`;
-      return facts;
-    }
-    // Every token this wallet traded in the transaction.
-    const mints = new Set((tx.meta?.postTokenBalances ?? []).concat(tx.meta?.preTokenBalances ?? []).filter((b) => b.owner === address).map((b) => b.mint));
-    let decoded = false;
-    for (const m of mints) {
-      const r = decodeTrade(tx, address, m);
-      if (r.ok) {
-        trades.push(r.trade);
-        decoded = true;
-      }
-    }
-    if (!decoded && mints.size) facts.undecodableTxs++;
-  }
-  facts.trades = trades;
-  facts.historyNote = `historique complet : ${ok.length} transactions réussies, ${trades.length} trades décodés`;
-  return facts;
 }
 
 /** Signature count (one page) for funders shared by several wallets: a full page suggests an exchange or service. */

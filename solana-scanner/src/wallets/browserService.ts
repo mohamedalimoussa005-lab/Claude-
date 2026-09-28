@@ -4,7 +4,7 @@
  * through HttpHistorySource. Same modules and rules as the backend scripts
  * (buyers + structural bridge, QUICK, QUICK completion, bot signals,
  * relationships, clusters, Quality / Confidence). DEEP is never allowed here,
- * and there is no fallback to the OLD RPC history path: when the backend is
+ * and there is no other history path or fallback: when the backend is
  * unavailable, wallet histories are UNKNOWN.
  */
 

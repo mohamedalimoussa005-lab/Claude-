@@ -91,7 +91,9 @@ const onchain: any = {
   },
 };
 const dex: any = { getPairsByTokenAddresses: async () => { throw new Error("offline"); } };
-const run = (rpc: WalletRpc, options: ConstructorParameters<typeof WalletIntelService>[3] = {}) => new WalletIntelService(rpc, dex, WALLET_CONFIG, options).analyze(row, onchain);
+/** History layer over the run's guarded RPC (public-RPC provider), as the server does without Helius. */
+const publicHistory: ConstructorParameters<typeof WalletIntelService>[3] = { history: ({ rpc }) => new WalletHistoryService({ providers: [new PublicRpcHistoryProvider(rpc, HISTORY_CONFIG.publicRpc)] }) };
+const run = (rpc: WalletRpc, options: ConstructorParameters<typeof WalletIntelService>[3] = publicHistory) => new WalletIntelService(rpc, dex, WALLET_CONFIG, options).analyze(row, onchain);
 const byAddr = (intel: WalletIntel, w: string) => intel.tracked.find((t) => t.address === w)!;
 
 // ─── classification ──────────────────────────────────────────────────────
@@ -111,7 +113,7 @@ test("RPC 413 'data allowance' → quota_exhausted; other failures get their own
 
 // ─── A / I: quota on wallet #3, circuit breaker ──────────────────────────
 
-test("A/I: wallet #3 hits RPC 413 → circuit open, wallets #4–#8 send no call, token PARTIAL", async () => {
+test("A/I: wallet #3 hits RPC 413 → circuit open, wallets #4–#8 and the creator send no call, token PARTIAL", async () => {
   let broken = false;
   const f = fakeRpc((m, arg) => {
     if (arg === W[2] && m === "sig") broken = true;
@@ -125,17 +127,16 @@ test("A/I: wallet #3 hits RPC 413 → circuit open, wallets #4–#8 send no call
   assert.equal(d.walletsPartial, 1, "#3 made the call that failed");
   assert.equal(d.walletsSkipped, 5, "#4–#8 were not requested");
   assert.equal(d.rpcCircuit, "unavailable_for_run");
-  assert.ok(d.rpcCallsSkipped >= 5);
   assert.equal(d.tokenFatal, null);
   assert.ok((d.failureKinds.quota_exhausted ?? 0) >= 6);
-  for (const w of W.slice(3)) assert.equal(f.calls.get(w) ?? 0, 0, "no call to the broken RPC for later wallets");
+  for (const w of W.slice(3)) assert.equal(f.calls.get(w) ?? 0, 0, "no call to the spent RPC for later wallets");
   assert.equal(f.calls.get(CREATOR) ?? 0, 0);
   assert.equal(f.calls.get(FUNDER) ?? 0, 0);
   // Wallets analysed before the failure keep their data.
   assert.ok(byAddr(intel, W[0]).profile.facts.trades !== null);
   assert.equal(byAddr(intel, W[0]).profile.facts.funder, FUNDER);
   const w3 = byAddr(intel, W[2]).profile.facts;
-  assert.deepEqual(w3.failure, { kind: "quota_exhausted", stages: [{ stage: "signatures", kind: "quota_exhausted" }], skipped: false });
+  assert.deepEqual(w3.failure, { kind: "quota_exhausted", stages: [{ stage: "history", kind: "quota_exhausted" }], skipped: false });
   assert.equal(byAddr(intel, W[5]).profile.facts.failure?.skipped, true);
   // H: the upstream wording never reaches the business result.
   assert.ok(!JSON.stringify(intel).includes(QUOTA_MSG));
@@ -171,29 +172,29 @@ test("B: wallet #3 times out → only #3 is UNKNOWN, #4–#8 are still analysed"
   for (const w of W.slice(3)) assert.ok(byAddr(intel, w).profile.facts.trades !== null);
 });
 
-// ─── C / D: partial wallet data kept ─────────────────────────────────────
+// ─── C / D: failures inside one wallet's history ─────────────────────────
 
-test("C: history reconstruction fails mid-way → signatures, age and funding already collected are kept", async () => {
-  // Call 1 of buy-2 is the token scan; call 2 is wallet #3's history reconstruction.
+test("C: a transaction of wallet #3's history fails → #3 is UNKNOWN (nothing invented), the others are complete", async () => {
+  // Call 1 of buy-2 is the token scan; call 2 is wallet #3's history page.
   const f = fakeRpc((m, arg, n) => (arg === "buy-2" && m === "tx" && n >= 2 ? timeout(m) : null));
   const intel = await run(f.rpc);
-  const w3 = byAddr(intel, W[2]).profile.facts;
-  assert.equal(w3.signatureCount, 2);
-  assert.equal(w3.funder, FUNDER);
-  assert.ok(w3.firstSeen !== null);
-  assert.equal(w3.trades, null);
-  assert.deepEqual(w3.failure?.stages, [{ stage: "history", kind: "timeout" }]);
+  const w3 = byAddr(intel, W[2]).profile;
+  assert.equal(w3.facts.trades, null);
+  assert.equal(w3.metrics, null, "no PnL / positions");
+  assert.equal(w3.facts.funder, null);
+  assert.equal(w3.facts.firstSeen, null);
+  assert.deepEqual(w3.facts.failure?.stages, [{ stage: "history", kind: "timeout" }]);
   assert.equal(intel.diagnostics.walletsCompleted, 7);
+  assert.equal(intel.diagnostics.rpcCircuit, "healthy", "a timeout does not open the circuit");
 });
 
-test("D: funding lookup fails → funding UNKNOWN, the wallet is still analysed", async () => {
+test("D: the funding transaction can't be returned → funding UNKNOWN, no funding flag", async () => {
   const f = fakeRpc((m, arg, n) => (arg === "fund-2" && m === "tx" && n === 1 ? new RpcError("network", m, "RPC network error: socket hang up") : null));
   const intel = await run(f.rpc);
-  const w3 = byAddr(intel, W[2]).profile.facts;
-  assert.equal(w3.funder, null);
-  assert.ok(w3.trades !== null && w3.trades.length === 1, "history still reconstructed");
-  assert.deepEqual(w3.failure?.stages, [{ stage: "funding", kind: "network" }]);
-  assert.ok(!byAddr(intel, W[2]).profile.flags.some((fl) => fl.key.startsWith("funded")), "unknown funding is no flag");
+  const w3 = byAddr(intel, W[2]).profile;
+  assert.equal(w3.facts.funder, null);
+  assert.ok(!w3.flags.some((fl) => fl.key.startsWith("funded") || fl.key === "sameFunderAsCreator"), "unknown funding is no flag");
+  for (const w of W.filter((x) => x !== W[2])) assert.equal(byAddr(intel, w).profile.facts.funder, FUNDER);
 });
 
 test("token-fatal only when the mint itself can't be listed", async () => {
@@ -205,7 +206,7 @@ test("token-fatal only when the mint itself can't be listed", async () => {
   assert.ok(W.every((w) => (f.calls.get(w) ?? 0) === 0));
 });
 
-// ─── E: NEW path keeps Helius intelligence while the RPC is out of quota ──
+// ─── E: Helius keeps wallet intelligence while the RPC is out of quota ────
 
 /** A Helius-like provider serving the fixture histories (no RPC). */
 function heliusLike(o: { fail?: (address: string) => Error | null } = {}) {
@@ -226,7 +227,7 @@ function heliusLike(o: { fail?: (address: string) => Error | null } = {}) {
   return { provider, stats };
 }
 
-test("E: NEW path — RPC out of quota after the token scan, Helius histories still give full wallet intelligence", async () => {
+test("E: RPC out of quota after the token scan, Helius histories still give full wallet intelligence", async () => {
   const f = fakeRpc((m, arg) => (arg === FUNDER ? quota(m) : null)); // the shared-funder check hits the spent quota
   const h = heliusLike();
   const intel = await run(f.rpc, { history: ({ rpc }) => new WalletHistoryService({ providers: [h.provider, new PublicRpcHistoryProvider(rpc, HISTORY_CONFIG.publicRpc)] }) });
@@ -239,7 +240,7 @@ test("E: NEW path — RPC out of quota after the token scan, Helius histories st
   assert.ok(!JSON.stringify(intel).includes(QUOTA_MSG));
 });
 
-test("E: NEW path — every history provider out of quota → the first wallet fails, the others are not requested", async () => {
+test("E: every history provider out of quota → the first wallet fails, the others are not requested", async () => {
   const h = heliusLike({ fail: () => new ProviderUnavailableError("helius", "quota_exhausted", QUOTA_MSG) });
   const f = fakeRpc((m, arg) => (W.includes(arg) ? quota(m) : null));
   const intel = await run(f.rpc, { history: ({ rpc }) => new WalletHistoryService({ providers: [h.provider, new PublicRpcHistoryProvider(rpc, HISTORY_CONFIG.publicRpc)] }) });
@@ -251,30 +252,12 @@ test("E: NEW path — every history provider out of quota → the first wallet f
   assert.ok(!JSON.stringify(intel).includes(QUOTA_MSG));
 });
 
-// ─── F: OLD and NEW give the same codes and the same UNKNOWN semantics ────
-
-test("F: OLD and NEW record the same failure code and the same UNKNOWN facts for a wallet on a spent RPC", async () => {
-  const fault: Fault = (m, arg) => (arg === W[0] ? quota(m) : null);
-  const oldIntel = await run(fakeRpc(fault).rpc);
-  const newIntel = await run(fakeRpc(fault).rpc, { history: ({ rpc }) => new WalletHistoryService({ providers: [new PublicRpcHistoryProvider(rpc, HISTORY_CONFIG.publicRpc)] }) });
-  const a = byAddr(oldIntel, W[0]).profile;
-  const b = byAddr(newIntel, W[0]).profile;
-  assert.equal(a.facts.failure?.kind, "quota_exhausted");
-  assert.equal(b.facts.failure?.kind, "quota_exhausted");
-  for (const p of [a, b]) {
-    assert.equal(p.facts.trades, null);
-    assert.equal(p.facts.firstSeen, null);
-    assert.equal(p.facts.funder, null);
-  }
-  assert.deepEqual(a.flags.map((f) => f.key), b.flags.map((f) => f.key));
-  assert.equal(a.quality, b.quality);
-});
-
 // ─── G: provider errors never change Wallet Quality by themselves ─────────
 
 test("G: a provider failure adds no flag and no penalty — same Quality as the same facts without the failure record", async () => {
   const f = fakeRpc((m, arg) => (arg === W[2] ? quota(m) : arg === "buy-4" ? timeout(m) : arg === "fund-5" ? new RpcError("network", m, "x") : null));
   const intel = await run(f.rpc);
+  assert.ok(intel.tracked.some((t) => t.profile.facts.failure), "the faults did hit wallet histories");
   for (const t of intel.tracked) {
     const facts = t.profile.facts;
     if (!facts.failure) continue;

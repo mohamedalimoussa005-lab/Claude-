@@ -29,14 +29,6 @@ export interface WalletConfig {
     /** Wallets kept per token for the per-wallet checks. */
     shortlist: number;
   };
-  history: {
-    /** Signature pages fetched per wallet to size its history (5 × 1,000). */
-    signaturePages: number;
-    /** A history is reconstructed only if the wallet has at most this many signatures. */
-    maxSignaturesForFullHistory: number;
-    /** Global budget of history transactions per run. */
-    maxHistoryTransactionsPerRun: number;
-  };
   flags: {
     /** ≥ this many signatures (the page cap) → bot-like / high-frequency. */
     busySignatures: number;
@@ -143,11 +135,6 @@ export const WALLET_CONFIG: WalletConfig = {
     recentTransactions: 20,
     minBuySol: 0.05,
     shortlist: 8,
-  },
-  history: {
-    signaturePages: 5,
-    maxSignaturesForFullHistory: 150,
-    maxHistoryTransactionsPerRun: 300,
   },
   flags: {
     busySignatures: 5_000,

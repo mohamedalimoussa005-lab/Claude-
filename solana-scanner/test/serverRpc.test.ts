@@ -124,7 +124,9 @@ test("RunRpcGuard still sits on top: a WalletIntel run with both providers spent
   const s = make({ HELIUS_API_KEY: KEY }, e);
   const row: any = { pair: { tokenAddress: W, pairAddress: W, dexId: "x" } };
   const oc: any = { data: { owners: { status: "error" }, mintInfo: { status: "error" }, creator: { status: "error" }, holders: { status: "error" } } };
-  const intel = await new WalletIntelService(s.rpc, { getPairsByTokenAddresses: async () => { throw new Error("offline"); } } as any, WALLET_CONFIG).analyze(row, oc);
+  const intel = await new WalletIntelService(s.rpc, { getPairsByTokenAddresses: async () => { throw new Error("offline"); } } as any, WALLET_CONFIG, {
+    history: ({ rpc }) => new WalletHistoryService({ providers: [new PublicRpcHistoryProvider(rpc)] }),
+  }).analyze(row, oc);
   assert.equal(intel.analysisStatus, "failed");
   assert.equal(intel.diagnostics.tokenFatal, "quota_exhausted");
   assert.deepEqual(intel.diagnostics.rpcProviders?.map((p) => p.label), ["authenticated_rpc", "public_rpc"]);

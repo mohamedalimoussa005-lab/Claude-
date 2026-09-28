@@ -1,7 +1,9 @@
 /**
  * Pipeline: DEX candidates → on-chain validation → (this) wallet discovery on
- * the token → shortlist → per-wallet facts and bounded history. Runs only on
- * tokens that already have an on-chain result.
+ * the token → buyer shortlist + Step 3 structural wallets → per-wallet facts
+ * from the history layer (WalletHistoryService, directly on the server or
+ * through /api/wallet-history in the browser). Runs only on tokens that
+ * already have an on-chain result.
  */
 
 import type { DexScreenerClient } from "../api/dexscreener.ts";
@@ -10,7 +12,7 @@ import type { NormalizedPair } from "../domain/normalize.ts";
 import { classifyHolder } from "../onchain/classify.ts";
 import type { OnchainResult } from "../onchain/service.ts";
 import type { ScoredPair } from "../scoring/score.ts";
-import { checkFunders, collectTokenScan, collectWalletFacts, HistoryBudget } from "./collect.ts";
+import { checkFunders, collectTokenScan } from "./collect.ts";
 import type { WalletRpc } from "./collect.ts";
 import { WALLET_CONFIG } from "./config.ts";
 import type { WalletConfig } from "./config.ts";
@@ -20,8 +22,7 @@ import { aggregateBuyers, buildIntel, nonBuyerEntry, shortlist, withDiagnostics 
 import type { BridgeInput, HistoryProviderDiagnostics, IntelDiagnostics, SelectionDiagnostics } from "./intel.ts";
 import { compareStep3Step4, selectStructuralWallets, step3Edges } from "./structural.ts";
 import type { SelectionSource } from "./structural.ts";
-import { CircuitOpenError, classifyFailure, RunRpcGuard } from "../history/failure.ts";
-import { unknownWalletFacts } from "./resilience.ts";
+import { classifyFailure, RunRpcGuard } from "../history/failure.ts";
 import type { WalletIntel } from "./intel.ts";
 import { WSOL_MINT } from "./trades.ts";
 import type { LaunchTimes, PricesSol, TokenScan, WalletFacts } from "./types.ts";
@@ -63,12 +64,12 @@ export async function fetchPricesSol(dex: PriceClient, mints: string[], solUsd: 
 
 export interface WalletIntelOptions {
   /**
-   * Step 4.2: history layer, injected by the backend (never built from UI code).
-   * Called once per token so each token gets its own DEEP budget; `ctx.rpc` is
-   * the run's guarded RPC (for a public-RPC history provider). Without it,
-   * the step 4 RPC path is used unchanged.
+   * The history layer, required: server-side WalletHistoryService, or the
+   * browser's HttpHistorySource (backend route). Called once per token so each
+   * token gets its own DEEP budget; `ctx.rpc` is the run's guarded RPC (for a
+   * public-RPC history provider).
    */
-  history?: (ctx: { rpc: WalletRpc }) => HistorySource;
+  history: (ctx: { rpc: WalletRpc }) => HistorySource;
   /** Allow selective DEEP on shortlisted wallets (default false). */
   deep?: boolean;
 }
@@ -78,26 +79,21 @@ export class WalletIntelService {
   private readonly dex: PriceClient;
   private readonly config: WalletConfig;
   private readonly options: WalletIntelOptions;
-  readonly budget: HistoryBudget;
   /** Launch times of analysed tokens, shared so histories can measure early entries on them. */
   readonly launchTimes: LaunchTimes = {};
   private readonly results = new Map<string, { at: number; value: Promise<WalletIntel> }>();
 
-  constructor(rpc: WalletRpc, dex: PriceClient, config: WalletConfig = WALLET_CONFIG, options: WalletIntelOptions = {}) {
+  constructor(rpc: WalletRpc, dex: PriceClient, config: WalletConfig = WALLET_CONFIG, options: WalletIntelOptions) {
+    // Single history path: no history layer, no wallet intelligence (never a silent fallback).
+    if (typeof options?.history !== "function") throw new Error("WalletIntelService needs a history layer (options.history)");
     this.rpc = rpc;
     this.dex = dex;
     this.config = config;
     this.options = options;
-    this.budget = new HistoryBudget(config.history.maxHistoryTransactionsPerRun);
-  }
-
-  /** "history" = NEW history layer (step 4.2), "rpc" = OLD step 4 RPC path. */
-  get historyPath(): "history" | "rpc" {
-    return this.options.history ? "history" : "rpc";
   }
 
   get deepAllowed(): boolean {
-    return !!this.options.history && !!this.options.deep;
+    return !!this.options.deep;
   }
 
   analyze(row: ScoredPair, onchain: OnchainResult, force = false): Promise<WalletIntel> {
@@ -133,7 +129,7 @@ export class WalletIntelService {
       // TOKEN-FATAL: not a single signature of the mint could be listed, so no buyer can be identified.
       const empty: TokenScan = { mint, launch: null, signaturesScanned: 0, launchReachable: false, transactionsFetched: 0, transactionsFailed: 0, undecodable: 0, earlyTrades: [], recentTrades: [], supply, solUsd };
       const intel = buildIntel(empty, [], [], ictx(null, {}), c);
-      return this.withRpcProviders({ ...intel, ...withDiagnostics([], [], classifyFailure(e), circuit()), source: this.options.history ? "history" : "rpc" });
+      return this.withRpcProviders({ ...intel, ...withDiagnostics([], [], classifyFailure(e), circuit()), source: "history" });
     }
     if (rpc.state !== "healthy" || scan.transactionsFailed) stages.push({ stage: "token_scan", kind: rpc.openedBy ?? "unknown", wallet: null });
     if (scan.launch?.time) this.launchTimes[mint] = scan.launch.time;
@@ -151,32 +147,10 @@ export class WalletIntelService {
       nonBuyers: structural.added.filter((x) => !buyerByAddr.has(x.address)).map((x) => nonBuyerEntry(scan, x.address, holdersPct)),
     };
 
-    let facts: WalletFacts[] = [];
-    let creatorFunder: string | null = null;
-    let fromHistory: Awaited<ReturnType<typeof collectTokenWalletsFromHistory>> | null = null;
-    if (this.options.history) {
-      fromHistory = await collectTokenWalletsFromHistory(this.options.history({ rpc }), { picks: analysed, creator, mint, supply, deepAllowed: !!this.options.deep }, c);
-      facts = fromHistory.facts;
-      creatorFunder = fromHistory.creatorFacts?.funder ?? null;
-      if (fromHistory.creatorFailure) stages.push({ stage: "creator", kind: fromHistory.creatorFailure, wallet: creator });
-    } else {
-      for (const a of analysed) {
-        try {
-          facts.push(await collectWalletFacts(rpc, a, this.budget, c));
-        } catch (e) {
-          // WALLET-LOCAL: this wallet is UNKNOWN, the others are still analysed.
-          facts.push(unknownWalletFacts(a, "signatures", classifyFailure(e), e instanceof CircuitOpenError));
-        }
-      }
-      if (creator) {
-        try {
-          creatorFunder = (await collectWalletFacts(rpc, creator, new HistoryBudget(0), c)).funder;
-        } catch (e) {
-          creatorFunder = null;
-          stages.push({ stage: "creator", kind: classifyFailure(e), wallet: creator });
-        }
-      }
-    }
+    const fromHistory = await collectTokenWalletsFromHistory(this.options.history({ rpc }), { picks: analysed, creator, mint, supply, deepAllowed: !!this.options.deep }, c);
+    const facts: WalletFacts[] = fromHistory.facts;
+    const creatorFunder: string | null = fromHistory.creatorFacts?.funder ?? null;
+    if (fromHistory.creatorFailure) stages.push({ stage: "creator", kind: fromHistory.creatorFailure, wallet: creator });
     await checkFunders(rpc, facts, (e) => stages.push({ stage: "funder_check", kind: classifyFailure(e), wallet: null }));
 
     const historyMints = [...new Set(facts.flatMap((f) => (f.trades ?? []).map((t) => t.mint)))];
@@ -197,11 +171,9 @@ export class WalletIntelService {
       deduplicatedCandidates: structural.deduplicated.length,
       structuralAnalyzed: structural.added.length,
       structuralSkipped: structural.skipped.length,
-      ...(fromHistory ? { historyStepsBySelectionSource: historySteps(facts, sourceOf) } : {}),
+      historyStepsBySelectionSource: historySteps(facts, sourceOf),
     };
-    const intel = { ...built, selection, step3Comparison };
-    if (fromHistory) return this.withRpcProviders({ ...intel, source: "history", creatorDistribution: fromHistory.distribution, deepRuns: fromHistory.deepRuns, historyProviders: historyProviders(facts) });
-    return this.withRpcProviders({ ...intel, source: "rpc" });
+    return this.withRpcProviders({ ...built, selection, step3Comparison, source: "history", creatorDistribution: fromHistory.distribution, deepRuns: fromHistory.deepRuns, historyProviders: historyProviders(facts) });
   }
 
   /** Server-side failover RPC (duck-typed, so this module stays free of server code): provider labels only. */

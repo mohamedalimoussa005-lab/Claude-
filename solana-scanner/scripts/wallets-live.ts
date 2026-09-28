@@ -3,13 +3,10 @@
  *
  *   npm run wallets:live          # 5 candidates (slow: the free RPC serves ~1 tx/s)
  *   npm run wallets:live -- 2
- *   npm run wallets:live -- 1 [--deep]
- *       default (NEW, step 4.2): wallet histories from WalletHistoryService
- *       (Helius when HELIUS_API_KEY is set in this Node process, else the
- *       public RPC); --deep allows selective DEEP (≤ 8 wallets per token).
- *       Server-side only. `--history` is still accepted (it is the default).
- *   npm run wallets:live -- 1 --old-history
- *       OLD step 4 RPC history path, kept for comparison / debugging.
+ *   npm run wallets:live -- 1 --deep
+ *       Wallet histories from WalletHistoryService (Helius when HELIUS_API_KEY
+ *       is set in this Node process, else the public RPC); --deep allows
+ *       selective DEEP (≤ 8 wallets per token). Server-side only.
  *
  * Pipeline: DEX Screener → scores → candidates → on-chain validation → wallet
  * discovery → shortlist → wallet facts / bounded history. No combined score.
@@ -25,10 +22,10 @@ import { scorePairs } from "../src/scoring/score.ts";
 import { WALLET_DISCLAIMER } from "../src/wallets/config.ts";
 import type { WalletIntel } from "../src/wallets/intel.ts";
 import { WALLET_CONFIG } from "../src/wallets/config.ts";
-import { createServerWalletIntelService, parseHistoryPathArgs } from "../src/wallets/server/historyPath.ts";
+import { createServerWalletIntelService } from "../src/wallets/server/walletIntel.ts";
 
 const args = process.argv.slice(2);
-const { path: historyPath, deep: allowDeep } = parseHistoryPathArgs(args);
+const allowDeep = args.includes("--deep");
 const count = Number(args.find((a) => !a.startsWith("--")) ?? ONCHAIN_CONFIG.candidates.max);
 const log: RpcLogEntry[] = [];
 // Server-side RPC: authenticated (HELIUS_API_KEY) → public fallback. Labels only in output, never the endpoint.
@@ -37,12 +34,8 @@ const rpc = serverRpc.rpc;
 console.log(`RPC : ${serverRpc.providers.join(" → ")}`);
 const dex = new DexScreenerClient();
 const onchain = new OnchainService(rpc);
-const { service: wallets, heliusEnabled } = createServerWalletIntelService({ rpc, dex, env: process.env, path: historyPath, deep: allowDeep, config: WALLET_CONFIG });
-console.log(
-  historyPath === "new"
-    ? `Historiques : NEW (WalletHistoryService, défaut) — Helius ${heliusEnabled ? "activé" : "désactivé (RPC public)"} — DEEP ${allowDeep ? "sélectif" : "désactivé"}`
-    : "Historiques : OLD (chemin RPC step 4, --old-history)",
-);
+const { service: wallets, heliusEnabled } = createServerWalletIntelService({ rpc, dex, env: process.env, deep: allowDeep, config: WALLET_CONFIG });
+console.log(`Historiques : WalletHistoryService — Helius ${heliusEnabled ? "activé" : "désactivé (RPC public)"} — DEEP ${allowDeep ? "sélectif" : "désactivé"}`);
 
 const scan = await scanSolana(dex);
 const rows = scorePairs(mostLiquidPairPerToken(scan.pairs), scan.fetchedAt);
@@ -85,8 +78,8 @@ for (const row of candidates) {
   }
   const dg = intel.diagnostics;
   console.log(`   Analyse : ${intel.analysisStatus} · wallets ${dg.walletsCompleted} complets / ${dg.walletsPartial} partiels / ${dg.walletsSkipped} non demandés · échecs ${JSON.stringify(dg.failureKinds)} · RPC ${dg.rpcCircuit}${dg.rpcCallsSkipped ? ` (${dg.rpcCallsSkipped} appels évités)` : ""}`);
-  if (intel.source === "history") {
-    console.log(`   Historiques (step 4.2) : DEEP lancés ${intel.deepRuns ?? 0}`);
+  {
+    console.log(`   Historiques : DEEP lancés ${intel.deepRuns ?? 0}`);
     for (const t of intel.tracked) {
       const h = t.profile.facts.history;
       if (h) console.log(`   · ${short(t.address)} ${h.completeness} · origine ${h.origin.found ? "trouvée" : `UNKNOWN (${h.origin.reason})`} · DEEP ${h.deep.attempted ? h.deep.stopReason : h.deep.skippedReason} · bot ${h.bot.botLike ? h.bot.evidence.join(" ; ") : "non"} · transferts ${h.transfers.length}`);
@@ -113,5 +106,5 @@ console.log(`Wallets acheteurs présents sur plusieurs candidats : ${multi.lengt
 const tot = (f: (i: WalletIntel) => number) => results.reduce((s, r) => s + f(r.intel), 0);
 console.log(`\nTOTAL : acheteurs identifiés ${tot((i) => i.buyersIdentified)} · suivis ${tot((i) => i.tracked.length)} · historiques reconstruits ${tot((i) => i.historiesReconstructed)} · Confidence HIGH ${tot((i) => i.highConfidence)} · wallets ≥5000 tx ${tot((i) => i.tracked.filter((t) => t.profile.facts.signatureCount >= 5000).length)}`);
 const byOutcome = log.reduce<Record<string, number>>((acc, e) => ((acc[e.outcome] = (acc[e.outcome] ?? 0) + 1), acc), {});
-console.log(`RPC : ${JSON.stringify(byOutcome)} · budget historique restant ${wallets.budget.remaining}`);
+console.log(`RPC : ${JSON.stringify(byOutcome)}`);
 console.log(`\n${WALLET_DISCLAIMER}`);
