@@ -40,7 +40,7 @@ export interface Step3EdgeRef {
   a: string;
   b: string;
   key: string | null;
-  strength: "strong" | "medium" | "weak";
+  strength: "strong" | "medium" | "weak" | "unknown";
 }
 
 export interface StructuralCandidate {

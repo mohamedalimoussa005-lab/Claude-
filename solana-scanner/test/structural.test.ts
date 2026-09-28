@@ -104,10 +104,11 @@ test("D: busy common funder (weak) → no structural candidate, even funded clos
   const r1 = facts3(far);
   assert.ok(r1.related!.links.every((l) => l.type === "sameBusyFunder" && l.strength === "weak"));
   assert.equal(selectStructuralWallets(r1, { buyerPicks: [], isExcluded: none }).candidates.length, 0);
-  // Same busy funder within 10 min: Step 3 marks it strong (sameFunderClose), the bridge still does not use it.
+  // Same busy funder within 10 min: a weak link in Step 3 too (no strong link, no group), so no candidate.
   const close = [0, 1, 2].map((i) => holder(key(80 + i), busy, { funderSignatureCount: 1000, firstSeen: T0 * 1000 + i * 60_000, fundingSignature: `f${i}` }));
   const r2 = facts3(close);
-  assert.ok(r2.related!.links.some((l) => l.type === "sameFunderClose"));
+  assert.ok(r2.related!.links.every((l) => l.type === "sameBusyFunder" && l.strength === "weak"));
+  assert.equal(r2.related!.groups.length, 0);
   assert.equal(selectStructuralWallets(r2, { buyerPicks: [], isExcluded: none }).candidates.length, 0);
   // Unknown activity (never counted) is not evidence either.
   const unknown = [0, 1, 2].map((i) => holder(key(80 + i), busy, { firstSeen: T0 * 1000 + i * 3 * HOUR * 1000, fundingSignature: `f${i}` }));

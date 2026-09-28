@@ -198,9 +198,11 @@ documentée, adresse de burn. Un compte détenu par un programme inconnu (locker
 | Data completeness | 15 | points par section de données indisponible |
 
 Wallets potentiellement liés (heuristiques, jamais « same owner ») : financés dans la même transaction, l'un
-financé par l'autre, présents dans les mêmes transactions, financés par la même adresse à quelques minutes
-d'écart (liens forts) ; même adresse de financement à des moments différents (moyen) ; adresse de financement
-très active, probablement un exchange (faible, non regroupé).
+financé par l'autre, présents dans les mêmes transactions, financés à ≤ 10 min d'écart par une même adresse
+**comptée peu active** (liens forts) ; même adresse comptée peu active à des moments différents (moyen) ; adresse
+de financement très active (≥ 1 000 signatures), probablement un exchange, **quelle que soit la proximité
+temporelle** (faible, non regroupé) ; adresse dont l'activité n'a pas été comptée (inconnu, jamais présumée rare,
+non regroupé). Seuls les liens forts et moyens forment des groupes.
 
 **On-chain Confidence** : part des sections vérifiées (mint 25, holders 25, classification 15, deployment wallet 15,
 activité 10, wallets 10) → HIGH ≥ 80, MEDIUM ≥ 50 ; LOW si le mint ou les holders manquent.

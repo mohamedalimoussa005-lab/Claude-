@@ -265,15 +265,22 @@ test("potentially related wallets: same funding tx and direct funding form a gro
   assert.ok(cat(a, "relationships").points > 0);
 });
 
-test("same funder: close in time = strong, busy funder at different times = weak and not grouped", () => {
+test("same funder: close in time = strong only when the funder is counted NOT busy; a busy funder stays weak and never groups, however close", () => {
   const w = (address: string, firstSeen: number, count: number | null): WalletHistory => ({
     address, pct: 3, signatureCount: 2, historyComplete: true, firstSeen, funder: key(99), fundingSignature: address, funderSignatureCount: count, signatures: [address],
   });
-  const close = findRelatedWallets([w(key(84), 0, 1000), w(key(85), 60_000, 1000)], { closeCreationMinutes: 10, busyFunderSignatures: 1000 });
+  const close = findRelatedWallets([w(key(84), 0, 40), w(key(85), 60_000, 40)], { closeCreationMinutes: 10, busyFunderSignatures: 1000 });
   assert.equal(close.links[0].type, "sameFunderClose");
   assert.equal(close.links[0].strength, "strong");
   assert.equal(close.groups.length, 1);
   assert.match(close.groups[0].reasons[0], /2 wallets financés par .* à moins de 10 min/);
+
+  // Formerly strong and grouped: the same busy funder, 1 min apart → weak, no group.
+  const busyClose = findRelatedWallets([w(key(84), 0, 1000), w(key(85), 60_000, 1000)], { closeCreationMinutes: 10, busyFunderSignatures: 1000 });
+  assert.equal(busyClose.links[0].type, "sameBusyFunder");
+  assert.equal(busyClose.links[0].strength, "weak");
+  assert.match(busyClose.links[0].reason, /1\.0 min d'écart.*proximité non probante/);
+  assert.equal(busyClose.groups.length, 0);
 
   const busy = findRelatedWallets([w(key(86), 0, 1000), w(key(87), 86_400_000, 1000)], { closeCreationMinutes: 10, busyFunderSignatures: 1000 });
   assert.equal(busy.links[0].type, "sameBusyFunder");
@@ -281,11 +288,18 @@ test("same funder: close in time = strong, busy funder at different times = weak
   assert.equal(busy.groups.length, 0);
 });
 
-test("a shared exchange-like funder is only a medium link, with a caveat", () => {
-  const w = (address: string): WalletHistory => ({ address, pct: 2, signatureCount: 2, historyComplete: true, firstSeen: null, funder: key(99), fundingSignature: address, signatures: [address] });
-  const r = findRelatedWallets([w(key(94)), w(key(95))], 10);
+test("a shared funder counted not busy is only a medium link, with a caveat; an uncounted one is UNKNOWN and never groups", () => {
+  const w = (address: string, count?: number | null): WalletHistory => ({ address, pct: 2, signatureCount: 2, historyComplete: true, firstSeen: null, funder: key(99), fundingSignature: address, signatures: [address], ...(count === undefined ? {} : { funderSignatureCount: count }) });
+  const r = findRelatedWallets([w(key(94), 40), w(key(95), 40)], 10);
+  assert.equal(r.links[0].type, "sameFunder");
   assert.equal(r.links[0].strength, "medium");
   assert.match(r.links[0].reason, /peut être un exchange/);
+  assert.equal(r.groups.length, 1, "verified medium keeps the current grouping");
+  for (const u of [findRelatedWallets([w(key(94)), w(key(95))], 10), findRelatedWallets([w(key(94), null), w(key(95), null)], 10)]) {
+    assert.equal(u.links[0].type, "sameFunderUnknownActivity");
+    assert.equal(u.links[0].strength, "unknown");
+    assert.equal(u.groups.length, 0);
+  }
 });
 
 // ─── collection with a fake RPC ──────────────────────────────────────────
@@ -412,4 +426,32 @@ test("on-chain analysis only runs on selected candidates", () => {
   ].map((pair) => ({ pair, score: scorePair(pair) }));
   const picked = selectCandidates(rows, { ...cfg, candidates: { ...cfg.candidates, max: 5 } }).map((r) => r.pair.tokenAddress);
   assert.deepEqual(picked.sort(), ["T1", "T4"]);
+});
+
+// ─── same funder close: Step 3 relationship input (risk formula unchanged) ──
+
+test("K / L / M: a busy or uncounted funder shared by two holders funded 1 s apart adds no group, no strong link, no relationship risk", () => {
+  const baseline = analyzeOnchain(data());
+  const withFunder = (count: number | null | undefined) => {
+    const d = data();
+    if (d.wallets.status === "ok") {
+      d.wallets.value = d.wallets.value.map((w, i) =>
+        i < 2 ? { ...w, funder: key(99), firstSeen: i * 1_000, ...(count === undefined ? {} : { funderSignatureCount: count }) } : w,
+      );
+    }
+    return analyzeOnchain(d);
+  };
+  // K: busy. L: activity unknown. M: never counted (e.g. beyond maxFundersChecked) → undefined, UNKNOWN, never presumed not busy.
+  for (const count of [cfg.clusters.busyFunderSignatures, null, undefined]) {
+    const a = withFunder(count);
+    assert.equal(a.related?.groups.length, 0, `count ${count}`);
+    assert.equal(a.related?.strongLinks, 0);
+    assert.equal(cat(a, "relationships").points, cat(baseline, "relationships").points);
+    assert.ok(!a.redFlags.some((f) => f.startsWith("Potentially related wallets")));
+  }
+  // Counted not busy + close: the strong link and the relationship risk are kept.
+  const real = withFunder(40);
+  assert.equal(real.related?.groups.length, 1);
+  assert.equal(real.related?.strongLinks, 1);
+  assert.ok(cat(real, "relationships").points > cat(baseline, "relationships").points);
 });

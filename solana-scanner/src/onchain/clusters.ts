@@ -3,19 +3,20 @@
  * These are hints, never proof of common ownership.
  *
  * Links:
- *   strong — funded in the same transaction; one funded by the other;
- *            appear together in the same transaction(s); funded by the same
- *            address within a few minutes of each other
- *   medium — funded by the same (not busy) address, at different times
- *   weak   — same busy funder (likely an exchange / service) at different
- *            times; or only first activity close in time
+ *   strong  — funded in the same transaction; one funded by the other;
+ *             appear together in the same transaction(s); funded by the same
+ *             address, counted NOT busy, within a few minutes of each other
+ *   medium  — funded by the same address counted not busy, at different times
+ *   weak    — same busy funder (likely an exchange / service), however close
+ *             in time; or only first activity close in time
+ *   unknown — same funder whose activity was not counted: never presumed rare
  * Groups are built from strong and medium links only.
  */
 
 import type { WalletHistory } from "./types.ts";
 
-export type LinkStrength = "strong" | "medium" | "weak";
-export type LinkType = "sameTx" | "fundedBy" | "sharedTx" | "sameFunderClose" | "sameFunder" | "sameBusyFunder" | "timing";
+export type LinkStrength = "strong" | "medium" | "weak" | "unknown";
+export type LinkType = "sameTx" | "fundedBy" | "sharedTx" | "sameFunderClose" | "sameFunder" | "sameBusyFunder" | "sameFunderUnknownActivity" | "timing";
 
 export interface WalletLink {
   a: string;
@@ -57,6 +58,7 @@ const STRENGTH: Record<LinkType, LinkStrength> = {
   sameFunderClose: "strong",
   sameFunder: "medium",
   sameBusyFunder: "weak",
+  sameFunderUnknownActivity: "unknown",
   timing: "weak",
 };
 
@@ -77,9 +79,13 @@ export function findRelatedWallets(wallets: WalletHistory[], options: ClusterOpt
       if (a.fundingSignature && a.fundingSignature === b.fundingSignature) {
         add("sameTx", a.fundingSignature, `${short(a.address)} et ${short(b.address)} financés dans la même transaction`);
       } else if (a.funder && a.funder === b.funder) {
-        const busy = (a.funderSignatureCount ?? 0) >= opts.busyFunderSignatures;
-        if (close) add("sameFunderClose", a.funder, `${short(a.address)} et ${short(b.address)} financés par ${short(a.funder)} à ${gapMin!.toFixed(1)} min d'écart`);
-        else if (busy) add("sameBusyFunder", a.funder, `${short(a.address)} et ${short(b.address)} financés par ${short(a.funder)}, adresse très active (probablement un exchange ou un service)`);
+        // Activity first: a close funding from a busy (or uncounted) funder is no evidence of a link.
+        // Both sides describe the same funder address; null = never counted = UNKNOWN, never presumed rare.
+        const count = a.funderSignatureCount ?? b.funderSignatureCount ?? null;
+        const when = close ? ` à ${gapMin!.toFixed(1)} min d'écart` : "";
+        if (count === null) add("sameFunderUnknownActivity", a.funder, `${short(a.address)} et ${short(b.address)} financés par ${short(a.funder)}${when}, activité du financeur inconnue : preuve insuffisante`);
+        else if (count >= opts.busyFunderSignatures) add("sameBusyFunder", a.funder, `${short(a.address)} et ${short(b.address)} financés par ${short(a.funder)}${when}, adresse très active (probablement un exchange ou un service)${close ? " : proximité non probante" : ""}`);
+        else if (close) add("sameFunderClose", a.funder, `${short(a.address)} et ${short(b.address)} financés par ${short(a.funder)} à ${gapMin!.toFixed(1)} min d'écart`);
         else add("sameFunder", a.funder, `${short(a.address)} et ${short(b.address)} financés par la même adresse ${short(a.funder)} (peut être un exchange)`);
       } else if (close) {
         add("timing", null, `${short(a.address)} et ${short(b.address)} actifs pour la première fois à ${gapMin!.toFixed(1)} min d'écart`);
@@ -93,7 +99,7 @@ export function findRelatedWallets(wallets: WalletHistory[], options: ClusterOpt
     }
   }
 
-  // Union-find over strong + medium links.
+  // Union-find over strong + medium links only (weak and unknown links never merge).
   const parent = new Map(wallets.map((w) => [w.address, w.address]));
   const find = (x: string): string => {
     const p = parent.get(x)!;
@@ -102,7 +108,7 @@ export function findRelatedWallets(wallets: WalletHistory[], options: ClusterOpt
     parent.set(x, r);
     return r;
   };
-  for (const l of links) if (l.strength !== "weak") parent.set(find(l.a), find(l.b));
+  for (const l of links) if (l.strength === "strong" || l.strength === "medium") parent.set(find(l.a), find(l.b));
 
   const byRoot = new Map<string, WalletHistory[]>();
   for (const w of wallets) {
@@ -137,7 +143,7 @@ function summarize(links: WalletLink[], opts: ClusterOptions): string[] {
     const k = `${l.type}|${l.key ?? ""}`;
     buckets.set(k, [...(buckets.get(k) ?? []), l]);
   }
-  const order: LinkType[] = ["sameTx", "fundedBy", "sameFunderClose", "sharedTx", "sameFunder", "sameBusyFunder", "timing"];
+  const order: LinkType[] = ["sameTx", "fundedBy", "sameFunderClose", "sharedTx", "sameFunder", "sameBusyFunder", "sameFunderUnknownActivity", "timing"];
   const out: string[] = [];
   for (const type of order) {
     for (const [k, ls] of buckets) {
@@ -162,6 +168,9 @@ function summarize(links: WalletLink[], opts: ClusterOptions): string[] {
           break;
         case "sameBusyFunder":
           out.push(`${wallets} wallets financés par ${short(key!)}, adresse très active (probablement un exchange ou un service)`);
+          break;
+        case "sameFunderUnknownActivity":
+          out.push(`${wallets} wallets financés par ${short(key!)}, activité du financeur inconnue (preuve insuffisante)`);
           break;
         case "timing":
           out.push(`${ls.length} paire(s) actives pour la première fois à moins de ${opts.closeCreationMinutes} min d'écart`);
