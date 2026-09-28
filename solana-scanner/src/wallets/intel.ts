@@ -15,6 +15,7 @@ import type { Trade } from "./trades.ts";
 import type { LaunchTimes, PricesSol, TokenScan, WalletFacts } from "./types.ts";
 import type { CreatorDistribution } from "./historyFacts.ts";
 import type { FailureKind } from "../history/failure.ts";
+import type { SelectionSource, Step3EdgeRef, Step3Step4Comparison, StructuralReason } from "./structural.ts";
 
 export type AnalysisStatus = "complete" | "partial" | "failed";
 
@@ -41,7 +42,8 @@ export interface IntelDiagnostics {
 
 export interface Buyer {
   address: string;
-  firstBuy: Trade;
+  /** null for a structural wallet with no qualifying buy in the scanned transactions. */
+  firstBuy: Trade | null;
   /** Minutes after the token's first transaction; null when the launch wasn't reached. */
   entryMinutesAfterLaunch: number | null;
   sameSlotAsLaunch: boolean;
@@ -60,6 +62,41 @@ export interface TrackedWallet extends Buyer {
   profile: WalletProfile;
   /** Index of its independent cluster (wallets sharing an index look related). */
   cluster: number;
+  /** Why the wallet was analysed: buyer shortlist, Step 3 structural bridge, or both. */
+  selectionSource: SelectionSource;
+  /** Structural reasons from Step 3 facts (empty for buyers only). */
+  structuralReasons: StructuralReason[];
+  /** Step 3 relationship group index and edges behind the structural selection. */
+  structuralRefs: { step3Group: number | null; edges: Step3EdgeRef[] } | null;
+}
+
+/** Step 3 → Step 4 bridge counters. */
+export interface SelectionDiagnostics {
+  /** Buyers discovered in the token scan. */
+  buyerCandidates: number;
+  buyersShortlisted: number;
+  /** Step 3 wallets eligible for the bridge. */
+  structuralCandidates: number;
+  /** Eligible wallets already in the buyer shortlist. */
+  deduplicatedCandidates: number;
+  /** Extra structural wallets analysed. */
+  structuralAnalyzed: number;
+  /** Eligible wallets left out by the cap. */
+  structuralSkipped: number;
+  /** History provider steps (trace) per selection source, history-layer path only. */
+  historyStepsBySelectionSource?: Record<SelectionSource, number>;
+}
+
+/** History provider outcomes over the analysed wallets (trace codes only). */
+export interface HistoryProviderDiagnostics {
+  primarySuccess: number;
+  primaryFailure: number;
+  /** PRIMARY not tried because turned off earlier in the process. */
+  primaryDisabled: number;
+  /** Phases served by another source after PRIMARY failed or was disabled. */
+  fallbackUsed: number;
+  enhancedSuccess: number;
+  publicRpcSuccess: number;
 }
 
 export interface WalletIntel {
@@ -88,6 +125,20 @@ export interface WalletIntel {
   /** Creator token transfers to other wallets (not sells), when the creator's history was read. */
   creatorDistribution?: CreatorDistribution | null;
   deepRuns?: number;
+  /** Step 3 → Step 4 bridge. */
+  selection?: SelectionDiagnostics;
+  /** Step 3 relationship evidence vs Step 4 observations, for wallets Step 4 analysed. Descriptive only. */
+  step3Comparison?: Step3Step4Comparison[];
+  historyProviders?: HistoryProviderDiagnostics;
+}
+
+/** Extra wallets from the Step 3 bridge (`buyerPicks` = the buyer shortlist). */
+export interface BridgeInput {
+  buyerPicks: Set<string>;
+  /** Structural wallets (analysed or deduplicated) by address. */
+  structural: Map<string, { reasons: StructuralReason[]; step3Group: number | null; edges: Step3EdgeRef[] }>;
+  /** Structural wallets that are not scan buyers (no qualifying buy). */
+  nonBuyers: Buyer[];
 }
 
 export interface IntelContext {
@@ -131,17 +182,46 @@ export function aggregateBuyers(scan: TokenScan, ctx: Pick<IntelContext, "creato
   return buyers;
 }
 
+/** A structural wallet with no qualifying buy in the scan: its scanned sells only, no entry. */
+export function nonBuyerEntry(scan: TokenScan, address: string, holdersPct: Record<string, number> | null): Buyer {
+  const sells = [...scan.earlyTrades, ...scan.recentTrades].filter((t, i, all) => t.owner === address && t.side === "sell" && all.findIndex((x) => x.signature === t.signature && x.owner === t.owner) === i);
+  return {
+    address,
+    firstBuy: null,
+    entryMinutesAfterLaunch: null,
+    sameSlotAsLaunch: false,
+    entryMcapSol: null,
+    entryMcapUsdEst: null,
+    buys: 0,
+    solSpent: 0,
+    sells: sells.length,
+    solReceived: sells.reduce((s, t) => s + t.sol, 0),
+    currentPct: holdersPct ? (holdersPct[address] ?? 0) : null,
+  };
+}
+
 /** Earliest buyers first, then the largest ones not already picked. */
 export function shortlist(buyers: Buyer[], n: number): Buyer[] {
-  const early = [...buyers].sort((a, b) => (a.firstBuy.time ?? Infinity) - (b.firstBuy.time ?? Infinity)).slice(0, Math.ceil(n / 2));
+  const early = [...buyers].sort((a, b) => (a.firstBuy?.time ?? Infinity) - (b.firstBuy?.time ?? Infinity)).slice(0, Math.ceil(n / 2));
   const picked = new Set(early.map((b) => b.address));
   const large = [...buyers].filter((b) => !picked.has(b.address)).sort((a, b) => b.solSpent - a.solSpent).slice(0, n - early.length);
   return [...early, ...large];
 }
 
-export function buildIntel(scan: TokenScan, buyers: Buyer[], facts: WalletFacts[], ctx: IntelContext, c: WalletConfig = WALLET_CONFIG): WalletIntel {
+export function buildIntel(scan: TokenScan, buyers: Buyer[], facts: WalletFacts[], ctx: IntelContext, c: WalletConfig = WALLET_CONFIG, bridge: BridgeInput | null = null): WalletIntel {
   const byAddr = new Map(facts.map((f) => [f.address, f]));
-  const tracked0 = buyers.filter((b) => byAddr.has(b.address));
+  const buyerAddrs = new Set(buyers.map((b) => b.address));
+  // Structural wallets join the same analysis: related-wallet detection, clusters, flags, Quality.
+  const tracked0 = [...buyers, ...(bridge?.nonBuyers ?? []).filter((b) => !buyerAddrs.has(b.address))].filter((b) => byAddr.has(b.address));
+  const selection = (a: string): Pick<TrackedWallet, "selectionSource" | "structuralReasons" | "structuralRefs"> => {
+    const st = bridge?.structural.get(a);
+    const buyer = bridge ? bridge.buyerPicks.has(a) : true;
+    return {
+      selectionSource: st ? (buyer ? "buyer_and_structural" : "structural") : "buyer",
+      structuralReasons: st ? [...st.reasons] : [],
+      structuralRefs: st ? { step3Group: st.step3Group, edges: st.edges } : null,
+    };
+  };
 
   const histories: WalletHistory[] = tracked0.map((b) => {
     const f = byAddr.get(b.address)!;
@@ -178,12 +258,12 @@ export function buildIntel(scan: TokenScan, buyers: Buyer[], facts: WalletFacts[
         pricesSol: ctx.pricesSol,
         now: ctx.now,
       },
-      b.firstBuy.time,
+      b.firstBuy?.time ?? null,
       c,
     );
-    return { ...b, profile, cluster: clusterOf.get(b.address)! };
+    return { ...b, profile, cluster: clusterOf.get(b.address)!, ...selection(b.address) };
   });
-  tracked.sort((a, b) => (a.firstBuy.time ?? Infinity) - (b.firstBuy.time ?? Infinity));
+  tracked.sort((a, b) => (a.firstBuy?.time ?? Infinity) - (b.firstBuy?.time ?? Infinity));
 
   const recentSeen = new Set<string>();
   const recentEntries = scan.recentTrades

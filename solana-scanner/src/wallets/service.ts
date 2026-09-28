@@ -16,8 +16,10 @@ import { WALLET_CONFIG } from "./config.ts";
 import type { WalletConfig } from "./config.ts";
 import { collectTokenWalletsFromHistory } from "./historyFacts.ts";
 import type { HistorySource } from "./historyFacts.ts";
-import { aggregateBuyers, buildIntel, shortlist, withDiagnostics } from "./intel.ts";
-import type { IntelDiagnostics } from "./intel.ts";
+import { aggregateBuyers, buildIntel, nonBuyerEntry, shortlist, withDiagnostics } from "./intel.ts";
+import type { BridgeInput, HistoryProviderDiagnostics, IntelDiagnostics, SelectionDiagnostics } from "./intel.ts";
+import { compareStep3Step4, selectStructuralWallets, step3Edges } from "./structural.ts";
+import type { SelectionSource } from "./structural.ts";
 import { CircuitOpenError, classifyFailure, RunRpcGuard } from "../history/failure.ts";
 import { unknownWalletFacts } from "./resilience.ts";
 import type { WalletIntel } from "./intel.ts";
@@ -129,22 +131,32 @@ export class WalletIntelService {
 
     const buyers = aggregateBuyers(scan, { creator, holdersPct, excluded }, c);
     const picks = shortlist(buyers, c.discovery.shortlist);
+    // Step 3 → Step 4 bridge: up to `structural.maxWallets` extra wallets from Step 3 relationship facts.
+    const step3 = { data: d, related: onchain.analysis?.related ?? null };
+    const structural = selectStructuralWallets(step3, { buyerPicks: picks.map((b) => b.address), isExcluded: excluded }, c);
+    const buyerByAddr = new Map(buyers.map((b) => [b.address, b]));
+    const analysed = [...picks.map((b) => b.address), ...structural.added.map((x) => x.address)];
+    const bridge: BridgeInput = {
+      buyerPicks: new Set(picks.map((b) => b.address)),
+      structural: new Map([...structural.deduplicated, ...structural.added].map((x) => [x.address, { reasons: x.reasons, step3Group: x.step3Group, edges: x.edges }])),
+      nonBuyers: structural.added.filter((x) => !buyerByAddr.has(x.address)).map((x) => nonBuyerEntry(scan, x.address, holdersPct)),
+    };
 
     let facts: WalletFacts[] = [];
     let creatorFunder: string | null = null;
     let fromHistory: Awaited<ReturnType<typeof collectTokenWalletsFromHistory>> | null = null;
     if (this.options.history) {
-      fromHistory = await collectTokenWalletsFromHistory(this.options.history({ rpc }), { picks: picks.map((b) => b.address), creator, mint, supply, deepAllowed: !!this.options.deep }, c);
+      fromHistory = await collectTokenWalletsFromHistory(this.options.history({ rpc }), { picks: analysed, creator, mint, supply, deepAllowed: !!this.options.deep }, c);
       facts = fromHistory.facts;
       creatorFunder = fromHistory.creatorFacts?.funder ?? null;
       if (fromHistory.creatorFailure) stages.push({ stage: "creator", kind: fromHistory.creatorFailure, wallet: creator });
     } else {
-      for (const b of picks) {
+      for (const a of analysed) {
         try {
-          facts.push(await collectWalletFacts(rpc, b.address, this.budget, c));
+          facts.push(await collectWalletFacts(rpc, a, this.budget, c));
         } catch (e) {
           // WALLET-LOCAL: this wallet is UNKNOWN, the others are still analysed.
-          facts.push(unknownWalletFacts(b.address, "signatures", classifyFailure(e), e instanceof CircuitOpenError));
+          facts.push(unknownWalletFacts(a, "signatures", classifyFailure(e), e instanceof CircuitOpenError));
         }
       }
       if (creator) {
@@ -161,8 +173,25 @@ export class WalletIntelService {
     const historyMints = [...new Set(facts.flatMap((f) => (f.trades ?? []).map((t) => t.mint)))];
     const pricesSol = await fetchPricesSol(this.dex, historyMints, solUsd);
 
-    const intel = { ...buildIntel(scan, buyers, facts, ictx(creatorFunder, pricesSol), c), ...withDiagnostics(facts, stages, null, circuit()) };
-    if (fromHistory) return this.withRpcProviders({ ...intel, source: "history", creatorDistribution: fromHistory.distribution, deepRuns: fromHistory.deepRuns });
+    const built = { ...buildIntel(scan, buyers, facts, ictx(creatorFunder, pricesSol), c, bridge), ...withDiagnostics(facts, stages, null, circuit()) };
+    const factsByAddr = new Map(facts.map((f) => [f.address, f]));
+    const step3Comparison = compareStep3Step4(step3Edges(step3, structural), {
+      links: built.related.links,
+      facts: factsByAddr,
+      clusterOf: new Map(built.tracked.map((t) => [t.address, t.cluster])),
+    });
+    const sourceOf = new Map(built.tracked.map((t) => [t.address, t.selectionSource]));
+    const selection: SelectionDiagnostics = {
+      buyerCandidates: buyers.length,
+      buyersShortlisted: picks.length,
+      structuralCandidates: structural.candidates.length,
+      deduplicatedCandidates: structural.deduplicated.length,
+      structuralAnalyzed: structural.added.length,
+      structuralSkipped: structural.skipped.length,
+      ...(fromHistory ? { historyStepsBySelectionSource: historySteps(facts, sourceOf) } : {}),
+    };
+    const intel = { ...built, selection, step3Comparison };
+    if (fromHistory) return this.withRpcProviders({ ...intel, source: "history", creatorDistribution: fromHistory.distribution, deepRuns: fromHistory.deepRuns, historyProviders: historyProviders(facts) });
     return this.withRpcProviders({ ...intel, source: "rpc" });
   }
 
@@ -171,4 +200,38 @@ export class WalletIntelService {
     const d = (this.rpc as { diagnostics?: () => { providers: IntelDiagnostics["rpcProviders"]; fallbacks: number } }).diagnostics?.();
     return d ? { ...intel, diagnostics: { ...intel.diagnostics, rpcProviders: d.providers, rpcFallbacks: d.fallbacks } } : intel;
   }
+}
+
+/** History provider trace steps per selection source (counts only). */
+function historySteps(facts: WalletFacts[], sourceOf: Map<string, SelectionSource>): Record<SelectionSource, number> {
+  const out: Record<SelectionSource, number> = { buyer: 0, structural: 0, buyer_and_structural: 0 };
+  for (const f of facts) {
+    const src = sourceOf.get(f.address);
+    if (!src) continue;
+    for (const p of f.history?.providerTrace ?? []) for (const st of p.steps) out[src] += st.count ?? 1;
+  }
+  return out;
+}
+
+/** PRIMARY success / failure and fallback use, from the wallets' provider traces. */
+export function historyProviders(facts: WalletFacts[]): HistoryProviderDiagnostics {
+  const d: HistoryProviderDiagnostics = { primarySuccess: 0, primaryFailure: 0, primaryDisabled: 0, fallbackUsed: 0, enhancedSuccess: 0, publicRpcSuccess: 0 };
+  for (const f of facts) {
+    for (const p of f.history?.providerTrace ?? []) {
+      let primaryMissed = false;
+      for (const st of p.steps) {
+        const n = st.count ?? 1;
+        if (st.source === "helius_primary") {
+          if (st.result === "success") d.primarySuccess += n;
+          else if (st.result === "disabled") (d.primaryDisabled += n), (primaryMissed = true);
+          else if (st.result !== "skipped") (d.primaryFailure += n), (primaryMissed = true);
+        } else if (st.result === "success") {
+          if (st.source === "helius_enhanced") d.enhancedSuccess += n;
+          else d.publicRpcSuccess += n;
+          if (primaryMissed) d.fallbackUsed += n;
+        }
+      }
+    }
+  }
+  return d;
 }

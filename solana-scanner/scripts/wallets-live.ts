@@ -3,10 +3,13 @@
  *
  *   npm run wallets:live          # 5 candidates (slow: the free RPC serves ~1 tx/s)
  *   npm run wallets:live -- 2
- *   npm run wallets:live -- 1 --history [--deep]
- *       step 4.2: wallet histories from WalletHistoryService (Helius when
- *       HELIUS_API_KEY is set in this Node process, else the public RPC);
- *       --deep allows selective DEEP (≤ 8 wallets per token). Server-side only.
+ *   npm run wallets:live -- 1 [--deep]
+ *       default (NEW, step 4.2): wallet histories from WalletHistoryService
+ *       (Helius when HELIUS_API_KEY is set in this Node process, else the
+ *       public RPC); --deep allows selective DEEP (≤ 8 wallets per token).
+ *       Server-side only. `--history` is still accepted (it is the default).
+ *   npm run wallets:live -- 1 --old-history
+ *       OLD step 4 RPC history path, kept for comparison / debugging.
  *
  * Pipeline: DEX Screener → scores → candidates → on-chain validation → wallet
  * discovery → shortlist → wallet facts / bounded history. No combined score.
@@ -22,14 +25,10 @@ import { scorePairs } from "../src/scoring/score.ts";
 import { WALLET_DISCLAIMER } from "../src/wallets/config.ts";
 import type { WalletIntel } from "../src/wallets/intel.ts";
 import { WALLET_CONFIG } from "../src/wallets/config.ts";
-import { WalletIntelService } from "../src/wallets/service.ts";
-import { createServerProviders } from "../src/history/server/heliusEnv.ts";
-import { WalletHistoryService } from "../src/history/service.ts";
-import { PublicRpcHistoryProvider } from "../src/history/publicRpc.ts";
+import { createServerWalletIntelService, parseHistoryPathArgs } from "../src/wallets/server/historyPath.ts";
 
 const args = process.argv.slice(2);
-const useHistory = args.includes("--history");
-const allowDeep = args.includes("--deep");
+const { path: historyPath, deep: allowDeep } = parseHistoryPathArgs(args);
 const count = Number(args.find((a) => !a.startsWith("--")) ?? ONCHAIN_CONFIG.candidates.max);
 const log: RpcLogEntry[] = [];
 // Server-side RPC: authenticated (HELIUS_API_KEY) → public fallback. Labels only in output, never the endpoint.
@@ -38,11 +37,12 @@ const rpc = serverRpc.rpc;
 console.log(`RPC : ${serverRpc.providers.join(" → ")}`);
 const dex = new DexScreenerClient();
 const onchain = new OnchainService(rpc);
-const history = useHistory ? createServerProviders({ env: process.env, rpc }) : null;
-if (history) console.log(`Historiques : WalletHistoryService — Helius ${history.heliusEnabled ? "activé" : "désactivé (RPC public)"} — DEEP ${allowDeep ? "sélectif" : "désactivé"}`);
-// Helius providers are shared; the public-RPC history provider uses each run's guarded RPC (circuit breaker).
-const heliusOnly = history ? history.providers.filter((p) => p.name !== "public_rpc") : [];
-const wallets = new WalletIntelService(rpc, dex, WALLET_CONFIG, history ? { history: ({ rpc: guarded }) => new WalletHistoryService({ providers: [...heliusOnly, new PublicRpcHistoryProvider(guarded)] }), deep: allowDeep } : {});
+const { service: wallets, heliusEnabled } = createServerWalletIntelService({ rpc, dex, env: process.env, path: historyPath, deep: allowDeep, config: WALLET_CONFIG });
+console.log(
+  historyPath === "new"
+    ? `Historiques : NEW (WalletHistoryService, défaut) — Helius ${heliusEnabled ? "activé" : "désactivé (RPC public)"} — DEEP ${allowDeep ? "sélectif" : "désactivé"}`
+    : "Historiques : OLD (chemin RPC step 4, --old-history)",
+);
 
 const scan = await scanSolana(dex);
 const rows = scorePairs(mostLiquidPairPerToken(scan.pairs), scan.fetchedAt);
@@ -70,11 +70,15 @@ for (const row of candidates) {
   console.log(`   Acheteurs dans le bloc de création (hors deployment wallet) : ${s.launchReachable ? intel.launchSlotBuyers : "UNKNOWN"}`);
   console.log(`   Inflow des wallets suivis (échantillon) : ${intel.trackedInflowSol.toFixed(2)} SOL ≈ $${intel.trackedInflowUsdEst?.toFixed(0) ?? "?"} (estimé)`);
   console.log(`   Entrées récentes : ${intel.recentEntries.slice(0, 5).map((e) => `${short(e.address)} — ${ago(e.time)} (${e.sol.toFixed(2)} SOL, cluster ${e.cluster ?? "-"})`).join(" · ") || "aucune"}`);
+  if (intel.selection) {
+    const sl = intel.selection;
+    console.log(`   Sélection : ${sl.buyersShortlisted}/${sl.buyerCandidates} acheteurs · structurels Step 3 ${sl.structuralCandidates} éligibles, ${sl.structuralAnalyzed} ajoutés, ${sl.deduplicatedCandidates} déjà acheteurs, ${sl.structuralSkipped} hors plafond`);
+  }
   for (const t of intel.tracked) {
     const p = t.profile;
     const m = p.metrics;
     console.log(
-      `   - ${short(t.address)} cluster ${t.cluster} · entrée ${t.entryMinutesAfterLaunch === null ? "?" : `+${t.entryMinutesAfterLaunch.toFixed(1)} min`}${t.sameSlotAsLaunch ? " (MÊME BLOC que la création)" : ""} · mcap entrée ${t.entryMcapUsdEst ? `$${(t.entryMcapUsdEst / 1000).toFixed(1)}k est.` : "?"} · ${t.solSpent.toFixed(2)} SOL · détient ${t.currentPct === null ? "?" : `${t.currentPct.toFixed(2)} %`}` +
+      `   - ${short(t.address)} [${t.selectionSource}${t.structuralReasons.length ? `: ${t.structuralReasons.join(", ")}` : ""}] cluster ${t.cluster} · entrée ${t.entryMinutesAfterLaunch === null ? "?" : `+${t.entryMinutesAfterLaunch.toFixed(1)} min`}${t.sameSlotAsLaunch ? " (MÊME BLOC que la création)" : ""} · mcap entrée ${t.entryMcapUsdEst ? `$${(t.entryMcapUsdEst / 1000).toFixed(1)}k est.` : "?"} · ${t.solSpent.toFixed(2)} SOL · détient ${t.currentPct === null ? "?" : `${t.currentPct.toFixed(2)} %`}` +
         ` · WQ ${p.quality} ${p.confidence} · ${p.facts.signatureCount >= 5000 ? "≥5000" : p.facts.signatureCount} tx · trades ${m ? `${m.evaluated} (${m.profitable} rentables, médiane ${pctFmt(m.medianReturn)})` : "UNKNOWN"}` +
         `${p.flags.length ? ` · ⚑ ${p.flags.map((f) => f.label).join(", ")}` : ""}`,
     );
@@ -91,6 +95,8 @@ for (const row of candidates) {
     if (d) console.log(`   Distribution du deployment wallet : ${d.transfers} transferts vers ${d.recipients.length} wallets (${d.pctSupply?.toFixed(1) ?? "?"} % de l'offre) · reventes observées ${d.recipientSells.length}/${d.recipientsChecked}`);
   }
   for (const g of intel.related.groups) console.log(`   Potentially related: ${g.members.map((m) => short(m.address)).join(", ")} — ${g.reasons.join(" ; ")}`);
+  for (const cmp of intel.step3Comparison ?? []) console.log(`   Step 3 ↔ Step 4 : ${cmp.step3.type} ${short(cmp.step3.a)} / ${short(cmp.step3.b)} → ${cmp.status} (${cmp.note})`);
+  if (intel.historyProviders) console.log(`   Providers historique : ${JSON.stringify(intel.historyProviders)}`);
   for (const n of intel.notes) console.log(`   note: ${n}`);
   console.log("");
 }

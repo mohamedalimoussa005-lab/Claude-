@@ -280,8 +280,8 @@ test("G: a provider failure adds no flag and no penalty — same Quality as the 
     if (!facts.failure) continue;
     const { failure: _ignored, ...clean } = facts;
     const ctx = { creator: CREATOR, creatorFunder: null, launchTime: T0 * 1000, relatedTo: [], launchTimes: {}, pricesSol: {}, now: (T0 + 86_400) * 1000 };
-    const withF = profileWallet(facts, ctx, t.firstBuy.time);
-    const without = profileWallet(clean, ctx, t.firstBuy.time);
+    const withF = profileWallet(facts, ctx, t.firstBuy?.time ?? null);
+    const without = profileWallet(clean, ctx, t.firstBuy?.time ?? null);
     assert.equal(withF.quality, without.quality, `${t.address}: quality`);
     assert.deepEqual(withF.flags.map((x) => x.key), without.flags.map((x) => x.key));
     assert.ok(!withF.flags.some((x) => /quota|timeout|network|failure|error/i.test(x.key + x.label)));

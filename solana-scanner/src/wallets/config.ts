@@ -13,6 +13,7 @@
  * a prediction of future performance, and no wallet is a recommendation.
  */
 
+import { ONCHAIN_CONFIG } from "../onchain/config.ts";
 import type { Curve } from "../scoring/config.ts";
 
 export interface WalletConfig {
@@ -65,6 +66,21 @@ export interface WalletConfig {
     fastRoundTripShare: number;
     /** Distinct tokens traded in the sample → many tokens. */
     manyTokens: number;
+  };
+  /**
+   * Step 3 → Step 4 bridge: wallets that Step 3 found structurally related
+   * (strong relationship, deployment link, non-busy common funder) are analysed
+   * alongside the buyer shortlist. Never chosen for size, score or recency.
+   */
+  structural: {
+    /** Extra wallets per token on top of the buyer shortlist (0 disables the bridge). */
+    maxWallets: number;
+    /** A non-busy funder must fund at least this many analysed holders. */
+    minCommonFunderWallets: number;
+    /** Funder signature count at or above which it is busy (same threshold as Step 3). */
+    busyFunderSignatures: number;
+    /** Deployment-wallet transfer, % of supply, from which its recipients qualify. */
+    minDeploymentTransferPct: number;
   };
   /** History layer (WalletHistoryService) usage in step 4.2. */
   historyLayer: {
@@ -147,6 +163,12 @@ export const WALLET_CONFIG: WalletConfig = {
     minFastRoundTrips: 5,
     fastRoundTripShare: 0.5,
     manyTokens: 10,
+  },
+  structural: {
+    maxWallets: 3,
+    minCommonFunderWallets: 3,
+    busyFunderSignatures: ONCHAIN_CONFIG.clusters.busyFunderSignatures,
+    minDeploymentTransferPct: 0.1,
   },
   historyLayer: {
     deepMaxWalletsPerToken: 8,
