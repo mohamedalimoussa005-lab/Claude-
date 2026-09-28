@@ -152,7 +152,8 @@ test("history too long for the free RPC: metrics UNKNOWN, LOW confidence, bot-li
 });
 
 test("suspicious patterns are penalised: fresh wallet, funded just before launch, linked to the deployer", () => {
-  const fresh = profileWallet(facts({ firstSeen: min(-30), fundingTime: min(-20), funder: key(91) }), ctx(), min(1));
+  // Deployment wallet funded 5 min apart by the same funder, counted as not busy → strong link.
+  const fresh = profileWallet(facts({ firstSeen: min(-30), fundingTime: min(-20), funder: key(91) }), ctx({ creatorFunding: { signature: "cf", time: min(-25), funderSignatureCount: 40 } }), min(1));
   const keys = fresh.flags.map((f) => f.key);
   assert.ok(keys.includes("fresh"));
   assert.ok(keys.includes("fundedBeforeLaunch"));

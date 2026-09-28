@@ -297,7 +297,9 @@ test("token level on the same fixtures: what the history layer establishes (no s
   assert.equal(tr.filter((t) => t.profile.facts.firstSeen !== null).length, 3);
   assert.equal(tr.filter((t) => t.profile.facts.funder !== null).length, 3);
   assert.equal(tr.filter((t) => t.profile.confidence !== "LOW").length, 1, "only A has enough complete positions");
-  assert.equal(tr.filter((t) => t.profile.flags.some((f) => ["creator", "fundedByCreator", "sameFunderAsCreator"].includes(f.key))).length, 3, "A, E, F share the creator's funder");
+  // A, E, F share the creator's funder; its activity was not counted here → UNKNOWN link, never a flag.
+  assert.equal(tr.filter((t) => t.profile.creatorLink?.type === "sameFunderUnknownActivity").length, 3, "A, E, F share the creator's funder");
+  assert.equal(tr.filter((t) => t.profile.flags.some((f) => ["fundedByCreator", "sameFunderAsCreator"].includes(f.key))).length, 0);
   assert.equal(intel.creatorDistribution?.transfers, 5);
   assert.ok(fresh.creatorFacts?.funder, "creator funder established from its history");
 });

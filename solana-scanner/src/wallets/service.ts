@@ -25,6 +25,7 @@ import type { SelectionSource } from "./structural.ts";
 import { classifyFailure, RunRpcGuard } from "../history/failure.ts";
 import type { WalletIntel } from "./intel.ts";
 import { WSOL_MINT } from "./trades.ts";
+import type { CreatorFunding } from "./profile.ts";
 import type { LaunchTimes, PricesSol, TokenScan, WalletFacts } from "./types.ts";
 
 export type PriceClient = Pick<DexScreenerClient, "getPairsByTokenAddresses">;
@@ -119,7 +120,7 @@ export class WalletIntelService {
     const rpc = new RunRpcGuard(this.rpc);
     const stages: IntelDiagnostics["stages"] = [];
     const circuit = () => ({ state: rpc.state, skipped: rpc.skipped });
-    const ictx = (creatorFunder: string | null, pricesSol: PricesSol) => ({ creator, creatorFunder, holdersPct, excluded, launchTimes: this.launchTimes, pricesSol, now: Date.now() });
+    const ictx = (creatorFunder: string | null, pricesSol: PricesSol, creatorFunding: CreatorFunding | null = null) => ({ creator, creatorFunder, creatorFunding, holdersPct, excluded, launchTimes: this.launchTimes, pricesSol, now: Date.now() });
 
     const solUsd = await fetchSolUsd(this.dex);
     let scan: TokenScan;
@@ -151,12 +152,17 @@ export class WalletIntelService {
     const facts: WalletFacts[] = fromHistory.facts;
     const creatorFunder: string | null = fromHistory.creatorFacts?.funder ?? null;
     if (fromHistory.creatorFailure) stages.push({ stage: "creator", kind: fromHistory.creatorFailure, wallet: creator });
-    await checkFunders(rpc, facts, (e) => stages.push({ stage: "funder_check", kind: classifyFailure(e), wallet: null }));
+    // The deployment wallet's funder is checked too (once) when a wallet shares it: its activity decides the link strength.
+    const funderCounts = await checkFunders(rpc, facts, (e) => stages.push({ stage: "funder_check", kind: classifyFailure(e), wallet: null }), { alsoCheck: creatorFunder });
+    const cfacts = fromHistory.creatorFacts;
+    const creatorFunding: CreatorFunding | null = cfacts
+      ? { signature: cfacts.fundingSignature, time: cfacts.fundingTime, funderSignatureCount: creatorFunder ? (funderCounts.get(creatorFunder) ?? null) : null }
+      : null;
 
     const historyMints = [...new Set(facts.flatMap((f) => (f.trades ?? []).map((t) => t.mint)))];
     const pricesSol = await fetchPricesSol(this.dex, historyMints, solUsd);
 
-    const built = { ...buildIntel(scan, buyers, facts, ictx(creatorFunder, pricesSol), c, bridge), ...withDiagnostics(facts, stages, null, circuit()) };
+    const built = { ...buildIntel(scan, buyers, facts, ictx(creatorFunder, pricesSol, creatorFunding), c, bridge), ...withDiagnostics(facts, stages, null, circuit()) };
     const factsByAddr = new Map(facts.map((f) => [f.address, f]));
     const step3Comparison = compareStep3Step4(step3Edges(step3, structural), {
       links: built.related.links,

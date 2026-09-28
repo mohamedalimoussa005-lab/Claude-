@@ -106,12 +106,18 @@ export async function collectTokenScan(
   };
 }
 
-/** Signature count (one page) for funders shared by several wallets: a full page suggests an exchange or service. */
-export async function checkFunders(rpc: WalletRpc, facts: WalletFacts[], onFailure?: (e: unknown) => void): Promise<void> {
+/**
+ * Signature count (one page) of funders shared by several wallets — a full
+ * page suggests an exchange or service — and of `alsoCheck` (the deployment
+ * wallet's funder) when at least one wallet shares it. One request per funder,
+ * never per wallet; returns the counts (null = check failed, UNKNOWN).
+ */
+export async function checkFunders(rpc: WalletRpc, facts: WalletFacts[], onFailure?: (e: unknown) => void, o: { alsoCheck?: string | null } = {}): Promise<Map<string, number | null>> {
   const counts = new Map<string, number>();
   for (const f of facts) if (f.funder) counts.set(f.funder, (counts.get(f.funder) ?? 0) + 1);
+  const out = new Map<string, number | null>();
   for (const [funder, n] of counts) {
-    if (n < 2) continue;
+    if (n < 2 && funder !== o.alsoCheck) continue;
     let count: number | null = null;
     try {
       count = (await rpc.getSignatures(funder, 1000)).length;
@@ -119,6 +125,8 @@ export async function checkFunders(rpc: WalletRpc, facts: WalletFacts[], onFailu
       count = null;
       onFailure?.(e);
     }
+    out.set(funder, count);
     for (const f of facts) if (f.funder === funder) f.funderSignatureCount = count;
   }
+  return out;
 }

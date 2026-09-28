@@ -238,10 +238,26 @@ public ne sert plus qu'au scan du token. Aucune **reconstruction partielle** :
 
 ### Faux « smart wallets »
 
-Pénalités : deployment-associated wallet, financé par lui ou par le même financeur, financé moins d'1 h avant
+Pénalités : deployment-associated wallet, lien avec lui (voir ci-dessous), financé moins d'1 h avant
 le lancement, wallet créé moins de 48 h avant son entrée, ≥ 5 000 transactions (bot / haute fréquence),
 micro-transactions, achète presque tous les nouveaux tokens, potentiellement lié à d'autres acheteurs,
 historique incomplet. Un ou deux trades gagnants ne suffisent jamais (poids de l'échantillon).
+
+**Lien avec le deployment-associated wallet** (`classifyCreatorLink`, même taxonomie et mêmes constantes que les
+relations entre wallets, fenêtre 10 min, financeur très actif ≥ 1 000 signatures) ; le deployment wallet n'entre
+jamais dans les clusters :
+
+| Preuve | Force | Flag |
+|---|---|---|
+| financé directement par lui | forte | `fundedByCreator`, high |
+| même transaction de financement | forte | `sameFunderAsCreator`, high |
+| même financeur compté peu actif, financements à ≤ 10 min | forte | `sameFunderAsCreator`, high |
+| même financeur compté peu actif, à d'autres moments | moyenne | `sameFunderAsCreator`, medium |
+| même financeur très actif (exchange / service) | faible | aucun (note descriptive) |
+| même financeur, activité non comptée | inconnue | aucun (note : preuve insuffisante) ; jamais présumé rare |
+
+L'activité du financeur du deployment wallet est comptée par `checkFunders` (une requête `getSignatures`, au plus
+une par token) seulement si un wallet analysé partage ce financeur ; déjà comptée → réutilisée.
 
 **Wallet Quality (0–100)** : taille d'échantillon 25, régularité 15, entrées précoces 10, performance réalisée 15,
 pire position 15, complétude 20, moins les pénalités. **Wallet Confidence** : HIGH ≥ 25 positions évaluables avec

@@ -10,7 +10,7 @@ import type { WalletHistory } from "../onchain/types.ts";
 import { WALLET_CONFIG } from "./config.ts";
 import type { WalletConfig } from "./config.ts";
 import { profileWallet } from "./profile.ts";
-import type { WalletProfile } from "./profile.ts";
+import type { CreatorFunding, WalletProfile } from "./profile.ts";
 import type { Trade } from "./trades.ts";
 import type { LaunchTimes, PricesSol, TokenScan, WalletFacts } from "./types.ts";
 import type { CreatorDistribution } from "./historyFacts.ts";
@@ -144,6 +144,7 @@ export interface BridgeInput {
 export interface IntelContext {
   creator: string | null;
   creatorFunder: string | null;
+  creatorFunding?: CreatorFunding | null;
   holdersPct: Record<string, number> | null;
   excluded: (address: string) => boolean;
   launchTimes: LaunchTimes;
@@ -252,6 +253,7 @@ export function buildIntel(scan: TokenScan, buyers: Buyer[], facts: WalletFacts[
       {
         creator: ctx.creator,
         creatorFunder: ctx.creatorFunder,
+        creatorFunding: ctx.creatorFunding ?? null,
         launchTime: scan.launch?.time ?? null,
         relatedTo: group ? group.members.map((m) => m.address).filter((a) => a !== b.address) : [],
         launchTimes: ctx.launchTimes,

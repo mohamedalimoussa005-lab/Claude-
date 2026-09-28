@@ -4,6 +4,7 @@
  * Pure and deterministic.
  */
 
+import { ONCHAIN_CONFIG } from "../onchain/config.ts";
 import { interpolate } from "../scoring/curve.ts";
 import { WALLET_CONFIG } from "./config.ts";
 import type { WalletConfig } from "./config.ts";
@@ -77,6 +78,34 @@ export interface WalletProfile {
   confidence: WalletConfidence;
   /** Things that could not be measured. */
   unknowns: string[];
+  /** Observed relationship with the deployment-associated wallet (null = none observed). Never a cluster link. */
+  creatorLink: CreatorLink | null;
+}
+
+/** Funding of the deployment-associated wallet, from its history. */
+export interface CreatorFunding {
+  signature: string | null;
+  time: number | null;
+  /** Signatures of its funder (one page); null = activity not checked (UNKNOWN). */
+  funderSignatureCount: number | null;
+}
+
+/**
+ * Wallet ↔ deployment-associated wallet, with the relationship engine's
+ * taxonomy (onchain/clusters.ts) and its constants:
+ *   strong  — funded by it; same funding transaction; same funder counted as
+ *             NOT busy and funded within the close-creation window
+ *   medium  — same funder counted as not busy, at different times
+ *   weak    — same busy funder (exchange / service): descriptive only
+ *   unknown — same funder whose activity was not counted: never presumed rare
+ */
+export type CreatorLinkType = "fundedByCreator" | "sameFundingTx" | "sameFunderClose" | "sameFunder" | "sameBusyFunder" | "sameFunderUnknownActivity";
+export interface CreatorLink {
+  type: CreatorLinkType;
+  strength: "strong" | "medium" | "weak" | "unknown";
+  /** Funder (or the deployment wallet itself for fundedByCreator). */
+  key: string;
+  detail: string;
 }
 
 export interface ProfileContext {
@@ -84,6 +113,8 @@ export interface ProfileContext {
   creator: string | null;
   /** Funder of the deployment-associated wallet, when known. */
   creatorFunder: string | null;
+  /** Its funding transaction, time and funder activity; missing = UNKNOWN. */
+  creatorFunding?: CreatorFunding | null;
   launchTime: number | null;
   /** Other wallets in the same potentially-related group. */
   relatedTo: string[];
@@ -170,13 +201,40 @@ export function computeMetrics(positions: Position[]): WalletMetrics {
   };
 }
 
-export function detectFlags(f: WalletFacts, ctx: ProfileContext, entryTime: number | null, c: WalletConfig = WALLET_CONFIG): WalletFlag[] {
+export function classifyCreatorLink(f: WalletFacts, ctx: ProfileContext): CreatorLink | null {
+  if (!ctx.creator || f.address === ctx.creator) return null;
+  if (f.funder === ctx.creator) return { type: "fundedByCreator", strength: "strong", key: ctx.creator, detail: `financé par ${short(ctx.creator)}` };
+  const cf = ctx.creatorFunding ?? null;
+  if (cf?.signature && f.fundingSignature === cf.signature) {
+    return { type: "sameFundingTx", strength: "strong", key: f.funder ?? ctx.creator, detail: "financé dans la même transaction que le deployment-associated wallet" };
+  }
+  if (!ctx.creatorFunder || f.funder !== ctx.creatorFunder) return null;
+  const funder = ctx.creatorFunder;
+  // Same funder address: either count describes it. null = never counted = UNKNOWN (never presumed rare).
+  const count = cf?.funderSignatureCount ?? f.funderSignatureCount ?? null;
+  const { busyFunderSignatures, closeCreationMinutes } = ONCHAIN_CONFIG.clusters;
+  if (count === null) {
+    return { type: "sameFunderUnknownActivity", strength: "unknown", key: funder, detail: `financeur commun ${short(funder)} avec le deployment-associated wallet ; activité du financeur inconnue : preuve insuffisante` };
+  }
+  if (count >= busyFunderSignatures) {
+    return { type: "sameBusyFunder", strength: "weak", key: funder, detail: `financeur commun ${short(funder)}, adresse très active (probablement un exchange ou un service) : relation faible` };
+  }
+  const gap = f.fundingTime !== null && cf?.time != null ? Math.abs(f.fundingTime - cf.time) : null;
+  if (gap !== null && gap <= closeCreationMinutes * 60_000) {
+    return { type: "sameFunderClose", strength: "strong", key: funder, detail: `financeur commun ${short(funder)} (peu actif), financements à ${(gap / 60_000).toFixed(1)} min d'écart` };
+  }
+  return { type: "sameFunder", strength: "medium", key: funder, detail: `financeur commun ${short(funder)} (peu actif), à des moments différents` };
+}
+
+export function detectFlags(f: WalletFacts, ctx: ProfileContext, entryTime: number | null, c: WalletConfig = WALLET_CONFIG, link: CreatorLink | null = classifyCreatorLink(f, ctx)): WalletFlag[] {
   const flags: WalletFlag[] = [];
   const add = (key: string, label: string, severity: WalletFlag["severity"], detail: string) => flags.push({ key, label, severity, detail });
 
   if (ctx.creator && f.address === ctx.creator) add("creator", "Deployment-associated wallet", "high", "adresse liée au déploiement du token");
-  if (ctx.creator && f.funder === ctx.creator) add("fundedByCreator", "Financé par le deployment-associated wallet", "high", `financé par ${short(ctx.creator)}`);
-  if (ctx.creatorFunder && f.funder === ctx.creatorFunder) add("sameFunderAsCreator", "Même financeur que le deployment-associated wallet", "high", `financeur commun ${short(ctx.creatorFunder)}`);
+  // Strength of the observed link → existing severities; weak / unknown links are descriptive only (no flag).
+  if (link?.type === "fundedByCreator") add("fundedByCreator", "Financé par le deployment-associated wallet", "high", link.detail);
+  else if (link?.strength === "strong") add("sameFunderAsCreator", "Même financement que le deployment-associated wallet", "high", link.detail);
+  else if (link?.strength === "medium") add("sameFunderAsCreator", "Même financeur (peu actif) que le deployment-associated wallet", "medium", link.detail);
   // Same flag, same severity as before; step 4.2 adds behavioural evidence from normalized transactions.
   const bot = f.history?.bot;
   if (f.signatureCount >= c.flags.busySignatures || bot?.botLike) {
@@ -204,8 +262,10 @@ export function detectFlags(f: WalletFacts, ctx: ProfileContext, entryTime: numb
 
 export function profileWallet(f: WalletFacts, ctx: ProfileContext, entryTime: number | null, c: WalletConfig = WALLET_CONFIG): WalletProfile {
   const q = c.quality;
-  const flags = detectFlags(f, ctx, entryTime, c);
+  const creatorLink = classifyCreatorLink(f, ctx);
+  const flags = detectFlags(f, ctx, entryTime, c, creatorLink);
   const unknowns: string[] = [...(f.history?.unknowns ?? [])];
+  if (creatorLink && (creatorLink.strength === "weak" || creatorLink.strength === "unknown")) unknowns.push(`Lien avec le deployment-associated wallet : ${creatorLink.detail} (non pénalisé).`);
   const items: QualityItem[] = [];
   let metrics: WalletMetrics | null = null;
 
@@ -238,5 +298,5 @@ export function profileWallet(f: WalletFacts, ctx: ProfileContext, entryTime: nu
   let confidence: WalletConfidence = f.trades && n >= c.confidence.highMinPositions ? "HIGH" : f.trades && n >= c.confidence.mediumMinPositions ? "MEDIUM" : "LOW";
   if (flags.some((fl) => fl.severity === "high") && confidence === "HIGH") confidence = "MEDIUM";
 
-  return { address: f.address, facts: f, metrics, flags, quality, qualityItems: items, confidence, unknowns };
+  return { address: f.address, facts: f, metrics, flags, quality, qualityItems: items, confidence, unknowns, creatorLink };
 }
