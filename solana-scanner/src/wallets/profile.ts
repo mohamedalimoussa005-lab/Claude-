@@ -4,6 +4,7 @@
  * Pure and deterministic.
  */
 
+import type { LinkStrength, LinkType } from "../onchain/clusters.ts";
 import { ONCHAIN_CONFIG } from "../onchain/config.ts";
 import { interpolate } from "../scoring/curve.ts";
 import { WALLET_CONFIG } from "./config.ts";
@@ -54,11 +55,21 @@ export interface WalletMetrics {
   unrealizedPnlSolEst: number | null;
 }
 
+/** Phenomenon a penalty describes; within one, the same evidence is penalised once. */
+export type FlagGroup = "funding_event" | "automation" | "funding_link";
+
 export interface WalletFlag {
   key: string;
   label: string;
   severity: "high" | "medium" | "low";
   detail: string;
+  group: FlagGroup | null;
+  /** Provenance of the evidence behind the flag (ids local to this wallet); empty = not traceable. */
+  evidence: string[];
+  /** false when the same evidence is already penalised by a stronger flag of the same phenomenon (duplicate). */
+  penaltyApplied: boolean;
+  /** Key of the flag whose penalty already covers this evidence. */
+  suppressedBy: string | null;
 }
 
 export interface QualityItem {
@@ -118,6 +129,8 @@ export interface ProfileContext {
   launchTime: number | null;
   /** Other wallets in the same potentially-related group. */
   relatedTo: string[];
+  /** This wallet's own strong / medium links inside its group (provenance of `related`); missing = not traceable. */
+  relatedLinks?: { type: LinkType; strength: LinkStrength; key: string | null; other: string }[];
   launchTimes: LaunchTimes;
   pricesSol: PricesSol;
   now: number;
@@ -228,35 +241,77 @@ export function classifyCreatorLink(f: WalletFacts, ctx: ProfileContext): Creato
 
 export function detectFlags(f: WalletFacts, ctx: ProfileContext, entryTime: number | null, c: WalletConfig = WALLET_CONFIG, link: CreatorLink | null = classifyCreatorLink(f, ctx)): WalletFlag[] {
   const flags: WalletFlag[] = [];
-  const add = (key: string, label: string, severity: WalletFlag["severity"], detail: string) => flags.push({ key, label, severity, detail });
+  const add = (key: string, label: string, severity: WalletFlag["severity"], detail: string, group: FlagGroup | null = null, evidence: string[] = []) =>
+    flags.push({ key, label, severity, detail, group, evidence, penaltyApplied: true, suppressedBy: null });
+  // The wallet's own funding (first transaction): what creator links and funder-based relations are built on.
+  const ownFunding = "funding:self";
 
   if (ctx.creator && f.address === ctx.creator) add("creator", "Deployment-associated wallet", "high", "adresse liée au déploiement du token");
   // Strength of the observed link → existing severities; weak / unknown links are descriptive only (no flag).
-  if (link?.type === "fundedByCreator") add("fundedByCreator", "Financé par le deployment-associated wallet", "high", link.detail);
-  else if (link?.strength === "strong") add("sameFunderAsCreator", "Même financement que le deployment-associated wallet", "high", link.detail);
-  else if (link?.strength === "medium") add("sameFunderAsCreator", "Même financeur (peu actif) que le deployment-associated wallet", "medium", link.detail);
+  if (link?.type === "fundedByCreator") add("fundedByCreator", "Financé par le deployment-associated wallet", "high", link.detail, "funding_link", [ownFunding]);
+  else if (link?.strength === "strong") add("sameFunderAsCreator", "Même financement que le deployment-associated wallet", "high", link.detail, "funding_link", [ownFunding]);
+  else if (link?.strength === "medium") add("sameFunderAsCreator", "Même financeur (peu actif) que le deployment-associated wallet", "medium", link.detail, "funding_link", [ownFunding]);
   // Same flag, same severity as before; step 4.2 adds behavioural evidence from normalized transactions.
   const bot = f.history?.bot;
   if (f.signatureCount >= c.flags.busySignatures || bot?.botLike) {
     const count = f.signatureCount >= c.flags.busySignatures ? `≥ ${c.flags.busySignatures.toLocaleString("en-US")} transactions` : null;
-    add("busy", "Activité de type bot / haute fréquence", "medium", [count, ...(bot?.botLike ? bot.evidence : [])].filter(Boolean).join(" ; "));
+    // Token breadth is part of this flag only when it made the wallet bot-like, on transactions of a complete history
+    // (the recent sample is then part of the trades the other token-breadth flag reads).
+    const evidence = [
+      ...(count ? ["signatureCount"] : []),
+      ...(bot?.botLike ? ["bot:frequency", ...(bot.fastFlipper ? ["bot:fastFlips"] : []), ...(bot.manyTokens && f.trades ? ["tokenBreadth"] : [])] : []),
+    ];
+    add("busy", "Activité de type bot / haute fréquence", "medium", [count, ...(bot?.botLike ? bot.evidence : [])].filter(Boolean).join(" ; "), "automation", evidence);
   }
   if (f.firstSeen !== null && entryTime !== null && entryTime - f.firstSeen < c.flags.freshWalletHours * 3_600_000) {
-    add("fresh", "Wallet créé très récemment", "medium", `première activité ${((entryTime - f.firstSeen) / 3_600_000).toFixed(1)} h avant son entrée`);
+    // First activity = first transaction of the history (its signature when the origin was found).
+    const first = f.history?.origin.found && f.history.origin.signature ? [`tx:${f.history.origin.signature}`] : [];
+    add("fresh", "Wallet créé très récemment", "medium", `première activité ${((entryTime - f.firstSeen) / 3_600_000).toFixed(1)} h avant son entrée`, "funding_event", first);
   }
   if (f.fundingTime !== null && ctx.launchTime !== null && ctx.launchTime - f.fundingTime >= 0 && ctx.launchTime - f.fundingTime < c.flags.fundedBeforeLaunchMinutes * 60_000) {
-    add("fundedBeforeLaunch", "Financé juste avant le lancement", "high", `${((ctx.launchTime - f.fundingTime) / 60_000).toFixed(1)} min avant la création du token`);
+    add("fundedBeforeLaunch", "Financé juste avant le lancement", "high", `${((ctx.launchTime - f.fundingTime) / 60_000).toFixed(1)} min avant la création du token`, "funding_event", f.fundingSignature ? [`tx:${f.fundingSignature}`] : []);
   }
-  if (ctx.relatedTo.length) add("related", "Potentiellement lié à d'autres acheteurs", "medium", ctx.relatedTo.map(short).join(", "));
+  if (ctx.relatedTo.length) {
+    // Funder-based links of this wallet derive from its own funding; any other link is independent evidence.
+    const evidence = ctx.relatedLinks
+      ? [...new Set(ctx.relatedLinks.map((l) => ((l.type === "sameTx" && l.key !== null && l.key === f.fundingSignature) || ((l.type === "sameFunderClose" || l.type === "sameFunder") && l.key !== null && l.key === f.funder) ? ownFunding : `link:${l.type}:${l.other}`)))]
+      : [];
+    add("related", "Potentiellement lié à d'autres acheteurs", "medium", ctx.relatedTo.map(short).join(", "), "funding_link", evidence);
+  }
   if (f.trades && f.trades.length >= 10) {
     const avg = f.trades.reduce((s, t) => s + t.sol, 0) / f.trades.length;
-    if (avg < c.flags.microTicketSol) add("micro", "Micro-transactions", "medium", `ticket moyen ${avg.toFixed(4)} SOL`);
+    if (avg < c.flags.microTicketSol) add("micro", "Micro-transactions", "medium", `ticket moyen ${avg.toFixed(4)} SOL`, "automation", ["ticketSize"]);
     const tokens = new Set(f.trades.filter((t) => t.side === "buy").map((t) => t.mint)).size;
     if ((tokens / Math.max(1, f.signatureCount)) * 100 >= c.flags.tokensPer100Txs && tokens >= 10) {
-      add("buysEverything", "Achète presque tous les nouveaux tokens", "low", `${tokens} tokens différents sur ${f.signatureCount} transactions`);
+      add("buysEverything", "Achète presque tous les nouveaux tokens", "low", `${tokens} tokens différents sur ${f.signatureCount} transactions`, "automation", ["tokenBreadth"]);
     }
   }
   if (!f.trades) add("incomplete", "Historique trop incomplet", "low", f.historyNote);
+  return dedupePenalties(flags);
+}
+
+const SEVERITY_RANK: Record<WalletFlag["severity"], number> = { high: 3, medium: 2, low: 1 };
+
+/**
+ * Within one phenomenon, a flag whose evidence is entirely covered by flags
+ * already penalised keeps its description but not its penalty: the strongest
+ * existing penalty of the group applies once. A flag without traceable
+ * evidence is never suppressed and never covers another one.
+ */
+export function dedupePenalties(flags: WalletFlag[]): WalletFlag[] {
+  const groups = new Set(flags.map((fl) => fl.group).filter((g): g is FlagGroup => g !== null));
+  for (const g of groups) {
+    const inGroup = flags.filter((fl) => fl.group === g).sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
+    const applied: WalletFlag[] = [];
+    for (const fl of inGroup) {
+      const covering = fl.evidence.length ? applied.filter((a) => fl.evidence.some((e) => a.evidence.includes(e))) : [];
+      const covered = fl.evidence.length > 0 && fl.evidence.every((e) => covering.some((a) => a.evidence.includes(e)));
+      if (covered) {
+        fl.penaltyApplied = false;
+        fl.suppressedBy = covering[0].key;
+      } else applied.push(fl);
+    }
+  }
   return flags;
 }
 
@@ -289,14 +344,17 @@ export function profileWallet(f: WalletFacts, ctx: ProfileContext, entryTime: nu
     unknowns.push(`Historique non reconstruit : ${f.historyNote}. Trades, PnL, rendements, entrées précoces et durée de détention : UNKNOWN.`);
   }
 
-  const penalty = flags.reduce((s, fl) => s + q.penalties[fl.severity], 0);
-  if (penalty) items.push({ label: "Pénalités (motifs suspects)", detail: flags.map((fl) => fl.label).join(", "), points: -penalty, max: 0 });
+  const applied = flags.filter((fl) => fl.penaltyApplied);
+  const penalty = applied.reduce((s, fl) => s + q.penalties[fl.severity], 0);
+  if (penalty) items.push({ label: "Pénalités (motifs suspects)", detail: applied.map((fl) => fl.label).join(", "), points: -penalty, max: 0 });
+  const duplicates = flags.filter((fl) => !fl.penaltyApplied);
+  if (duplicates.length) items.push({ label: "Pénalités neutralisées (même preuve)", detail: duplicates.map((fl) => `${fl.label} (déjà couvert par ${flags.find((x) => x.key === fl.suppressedBy)?.label ?? fl.suppressedBy})`).join(", "), points: 0, max: 0 });
   for (const it of items) it.points = r1(it.points);
   const quality = Math.max(0, Math.min(100, Math.round(items.reduce((s, it) => s + it.points, 0))));
 
   const n = metrics?.evaluated ?? 0;
   let confidence: WalletConfidence = f.trades && n >= c.confidence.highMinPositions ? "HIGH" : f.trades && n >= c.confidence.mediumMinPositions ? "MEDIUM" : "LOW";
-  if (flags.some((fl) => fl.severity === "high") && confidence === "HIGH") confidence = "MEDIUM";
+  if (applied.some((fl) => fl.severity === "high") && confidence === "HIGH") confidence = "MEDIUM";
 
   return { address: f.address, facts: f, metrics, flags, quality, qualityItems: items, confidence, unknowns, creatorLink };
 }

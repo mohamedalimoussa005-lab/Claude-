@@ -261,6 +261,14 @@ jamais dans les clusters :
 L'activité du financeur du deployment wallet est comptée par `checkFunders` (une requête `getSignatures`, au plus
 une par token) seulement si un wallet analysé partage ce financeur ; déjà comptée → réutilisée.
 
+**Pénalités en double** : quand la même preuve déclenche plusieurs flags du même phénomène, seule la pénalité existante
+la plus forte du groupe s'applique ; les autres flags restent affichés (`penaltyApplied: false`, `suppressedBy`).
+Groupes : événement de financement (`fresh` et `fundedBeforeLaunch` lus sur la même première transaction), automatisation
+(`buysEverything` quand l'étendue des tokens est ce qui rend le wallet bot-like, sur un historique complet ; `micro`
+reste indépendant), lien de financement (`related` quand tous ses liens viennent du financement du wallet déjà
+pénalisé par un lien avec le deployment wallet ; un `sharedTx` ou un `fundedBy` entre wallets le garde). Sans
+provenance traçable (signature d'origine ou liens inconnus), rien n'est neutralisé.
+
 **Wallet Quality (0–100)** : taille d'échantillon 25, régularité 15, entrées précoces 10, performance réalisée 15,
 pire position 15, complétude 20, moins les pénalités. **Wallet Confidence** : HIGH ≥ 25 positions évaluables avec
 historique complet, MEDIUM ≥ 10, sinon LOW.

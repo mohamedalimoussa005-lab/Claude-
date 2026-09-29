@@ -239,6 +239,9 @@ function WalletProfileView({ w }: { w: TrackedWallet }) {
           {p.flags.map((fl) => (
             <li key={fl.key}>
               <strong>{fl.label}</strong> ({fl.severity}) — {fl.detail}
+              {!fl.penaltyApplied && (
+                <span className="muted"> · pénalité non appliquée : même preuve que « {p.flags.find((x) => x.key === fl.suppressedBy)?.label ?? fl.suppressedBy} »</span>
+              )}
             </li>
           ))}
         </ul>

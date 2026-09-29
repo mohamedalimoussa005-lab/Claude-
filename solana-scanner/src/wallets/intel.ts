@@ -256,6 +256,12 @@ export function buildIntel(scan: TokenScan, buyers: Buyer[], facts: WalletFacts[
         creatorFunding: ctx.creatorFunding ?? null,
         launchTime: scan.launch?.time ?? null,
         relatedTo: group ? group.members.map((m) => m.address).filter((a) => a !== b.address) : [],
+        relatedLinks: group
+          ? related.links
+              .filter((l) => (l.a === b.address || l.b === b.address) && (l.strength === "strong" || l.strength === "medium"))
+              .map((l) => ({ type: l.type, strength: l.strength, key: l.key, other: l.a === b.address ? l.b : l.a }))
+              .filter((l) => group.members.some((m) => m.address === l.other))
+          : [],
         launchTimes: ctx.launchTimes,
         pricesSol: ctx.pricesSol,
         now: ctx.now,
