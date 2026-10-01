@@ -13,7 +13,13 @@ import type { WalletConfig } from "./config.ts";
 import type { Trade } from "./trades.ts";
 import type { LaunchTimes, PricesSol, WalletFacts } from "./types.ts";
 
+/** Legacy Confidence: data volume, capped HIGH → MEDIUM by an applied high-severity flag (kept for compatibility). */
 export type WalletConfidence = "LOW" | "MEDIUM" | "HIGH";
+/**
+ * Data Confidence: how much measured data stands behind Wallet Quality, nothing else.
+ * UNKNOWN when Quality is UNKNOWN; otherwise from evaluable positions only. No flag caps it.
+ */
+export type DataConfidence = "HIGH" | "MEDIUM" | "LOW" | "UNKNOWN";
 
 export interface Position {
   mint: string;
@@ -105,7 +111,11 @@ export interface WalletProfile {
   flags: WalletFlag[];
   quality: WalletQuality;
   qualityItems: QualityItem[];
+  /** Legacy indicator (data volume capped by an applied high flag); see dataConfidence and risk. */
   confidence: WalletConfidence;
+  dataConfidence: DataConfidence;
+  /** Risk observations derived from the flags (no new signal). */
+  risk: RiskSummary;
   /** Things that could not be measured. */
   unknowns: string[];
   /** Observed relationship with the deployment-associated wallet (null = none observed). Never a cluster link. */
@@ -378,7 +388,55 @@ export function profileWallet(f: WalletFacts, ctx: ProfileContext, entryTime: nu
   let confidence: WalletConfidence = f.trades && n >= c.confidence.highMinPositions ? "HIGH" : f.trades && n >= c.confidence.mediumMinPositions ? "MEDIUM" : "LOW";
   if (applied.some((fl) => fl.severity === "high") && confidence === "HIGH") confidence = "MEDIUM";
 
-  return { address: f.address, facts: f, metrics, flags, quality, qualityItems: items, confidence, unknowns, creatorLink };
+  const dataConfidence: DataConfidence =
+    quality.status === "unknown" ? "UNKNOWN" : n >= c.confidence.highMinPositions ? "HIGH" : n >= c.confidence.mediumMinPositions ? "MEDIUM" : "LOW";
+
+  return { address: f.address, facts: f, metrics, flags, quality, qualityItems: items, confidence, dataConfidence, risk: summarizeRisk(flags, quality), unknowns, creatorLink };
+}
+
+export type FlagSeverity = WalletFlag["severity"];
+
+/**
+ * Risk observations, derived from the flags only. The data status ("incomplete") is not a risk.
+ * On an UNKNOWN Quality no penalty is removed: every flag is an observation and maxApplied is null.
+ */
+export interface RiskSummary {
+  maxObserved: FlagSeverity | null;
+  /** Highest severity whose penalty is actually removed from a measured Quality. */
+  maxApplied: FlagSeverity | null;
+  /** Measured Quality: flags whose penalty applies. */
+  applied: WalletFlag[];
+  /** Measured Quality: flags kept for description, penalty already covered by the same evidence. */
+  neutralised: WalletFlag[];
+  /** UNKNOWN Quality: every observed flag, none penalised. */
+  observedOnUnknown: WalletFlag[];
+}
+
+const maxSeverity = (fs: WalletFlag[]): FlagSeverity | null =>
+  fs.reduce<FlagSeverity | null>((m, fl) => (m === null || SEVERITY_RANK[fl.severity] > SEVERITY_RANK[m] ? fl.severity : m), null);
+
+export function summarizeRisk(flags: WalletFlag[], quality: WalletQuality): RiskSummary {
+  const risk = flags.filter((fl) => fl.group !== "data");
+  const measured = quality.status === "measured";
+  const applied = measured ? risk.filter((fl) => fl.penaltyApplied) : [];
+  return {
+    maxObserved: maxSeverity(risk),
+    maxApplied: maxSeverity(applied),
+    applied,
+    neutralised: measured ? risk.filter((fl) => !fl.penaltyApplied) : [],
+    observedOnUnknown: measured ? [] : risk,
+  };
+}
+
+/** Text form for scripts: "fundedByCreator HIGH", "busy MEDIUM (observé, Quality UNKNOWN)", "aucune". */
+export function formatRisk(r: RiskSummary): string {
+  const one = (fl: WalletFlag, note = "") => `${fl.key} ${fl.severity.toUpperCase()}${note}`;
+  const parts = [
+    ...r.applied.map((fl) => one(fl)),
+    ...r.neutralised.map((fl) => one(fl, ` (neutralisé : ${fl.suppressedBy})`)),
+    ...r.observedOnUnknown.map((fl) => one(fl, " (observé, Quality UNKNOWN)")),
+  ];
+  return parts.length ? parts.join(", ") : "aucune";
 }
 
 /** Why the history could not be scored, from recorded facts only (failure record, history-layer decisions). */
@@ -407,11 +465,9 @@ export function formatQuality(q: WalletQuality): string {
 
 /** Flags split for display: data status, observations that cost points, and the rest (duplicates, or observations on an UNKNOWN score). */
 export function presentFlags(p: WalletProfile): { dataStatus: WalletFlag[]; penalised: WalletFlag[]; notPenalised: WalletFlag[] } {
-  const measured = p.quality.status === "measured";
-  const others = p.flags.filter((fl) => fl.group !== "data");
   return {
     dataStatus: p.flags.filter((fl) => fl.group === "data"),
-    penalised: measured ? others.filter((fl) => fl.penaltyApplied) : [],
-    notPenalised: measured ? others.filter((fl) => !fl.penaltyApplied) : others,
+    penalised: p.risk.applied,
+    notPenalised: p.quality.status === "measured" ? p.risk.neutralised : p.risk.observedOnUnknown,
   };
 }

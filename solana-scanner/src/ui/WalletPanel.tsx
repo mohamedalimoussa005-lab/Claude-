@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { WALLET_CONFIG, WALLET_DISCLAIMER } from "../wallets/config.ts";
 import type { TrackedWallet, WalletIntel } from "../wallets/intel.ts";
-import { formatQuality, presentFlags } from "../wallets/profile.ts";
+import { formatQuality, formatRisk, presentFlags } from "../wallets/profile.ts";
 import { shortAddress } from "./format.ts";
 
 export type WalletState = { status: "loading" } | { status: "done"; intel: WalletIntel } | { status: "error"; error: string };
@@ -73,6 +73,8 @@ function WalletIntelView({ intel }: { intel: WalletIntel }) {
           <strong className="big">{intel.highQuality}</strong>
           <span className="muted small-text">
             {intel.historiesReconstructed} historique(s) reconstruit(s) · Quality mesurée {intel.measured} · UNKNOWN {intel.unknown}
+            <br />
+            sans risque HIGH appliqué {intel.highQualityWithoutHighRiskFlags} · Data Confidence HIGH {intel.highConfidenceData} (descriptif, pas une prédiction)
           </span>
         </div>
       </div>
@@ -115,7 +117,7 @@ function WalletIntelView({ intel }: { intel: WalletIntel }) {
               <th>Entry</th>
               <th className="num">Estimated amount</th>
               <th className="num">Wallet Quality</th>
-              <th>Confidence</th>
+              <th>Data Confidence</th>
               <th className="num">Historical trades</th>
               <th className="num">Median return</th>
               <th className="num">Early-entry rate</th>
@@ -146,7 +148,8 @@ function WalletIntelView({ intel }: { intel: WalletIntel }) {
                   </td>
                   <td className="num">{t.profile.quality.status === "measured" ? t.profile.quality.value : "UNKNOWN"}</td>
                   <td>
-                    <span className={`badge conf-${t.profile.confidence.toLowerCase()}`}>{t.profile.confidence}</span>
+                    <span className={`badge conf-${t.profile.dataConfidence.toLowerCase()}`}>{t.profile.dataConfidence}</span>
+                    <div className="muted small-text">legacy {t.profile.confidence}</div>
                   </td>
                   <td className="num">{m ? m.evaluated : "UNKNOWN"}</td>
                   <td className="num">{m ? pct(m.medianReturn) : "UNKNOWN"}</td>
@@ -194,8 +197,14 @@ function WalletProfileView({ w }: { w: TrackedWallet }) {
         WALLET PROFILE — <code>{w.address}</code>
       </h4>
       <p className="small-text">
-        Wallet Quality <strong>{p.quality.status === "measured" ? `${p.quality.value}/100` : formatQuality(p.quality)}</strong> · Confidence <span className={`badge conf-${p.confidence.toLowerCase()}`}>{p.confidence}</span> ·
-        cluster {w.cluster}
+        Wallet Quality <strong>{p.quality.status === "measured" ? `${p.quality.value}/100` : formatQuality(p.quality)}</strong> · Data Confidence{" "}
+        <span className={`badge conf-${p.dataConfidence.toLowerCase()}`}>{p.dataConfidence}</span> · cluster {w.cluster}
+        <br />
+        Risk observations : {formatRisk(p.risk)}
+        <br />
+        <span className="muted">
+          Legacy Confidence (indicateur historique, plafonné par un motif HIGH appliqué) : {p.confidence}
+        </span>
       </p>
 
       <h5>History</h5>

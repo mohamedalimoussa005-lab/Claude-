@@ -113,7 +113,17 @@ export interface WalletIntel {
   unknown: number;
   /** UNKNOWN wallets per reason code. */
   unknownByReason: Record<QualityUnknownReason["code"], number>;
+  /** Legacy Confidence HIGH (capped by an applied high flag). */
   highConfidence: number;
+  /**
+   * Data-only counters (B1). Descriptions of the available history, never predictions of profitability:
+   * highConfidenceData — Data Confidence HIGH;
+   * highQualityMeasured — measured Quality ≥ threshold with Data Confidence MEDIUM or HIGH;
+   * highQualityWithoutHighRiskFlags — the same set without an applied high-severity risk flag.
+   */
+  highConfidenceData: number;
+  highQualityMeasured: number;
+  highQualityWithoutHighRiskFlags: number;
   related: RelatedWallets;
   recentEntries: { address: string; time: number | null; sol: number; cluster: number | null }[];
   /** Buys by the deployment-associated wallet among the scanned transactions. */
@@ -307,6 +317,9 @@ export function buildIntel(scan: TokenScan, buyers: Buyer[], facts: WalletFacts[
   if (scan.undecodable) notes.push(`${scan.undecodable} mouvement(s) non décodable(s) comme achat/vente (transferts, routes multi-tokens, quote non SOL) : ignorés, pas devinés.`);
   notes.push(`Échantillon : ${scan.earlyTrades.length + scan.recentTrades.length} trades décodés sur ${scan.transactionsFetched} transactions ; montants en SOL vérifiables, USD estimé au prix SOL actuel.`);
 
+  const hqMeasured = tracked.filter(
+    (t) => t.profile.quality.status === "measured" && t.profile.quality.value >= c.highQualityThreshold && (t.profile.dataConfidence === "MEDIUM" || t.profile.dataConfidence === "HIGH"),
+  );
   return {
     mint: scan.mint,
     scan,
@@ -319,6 +332,9 @@ export function buildIntel(scan: TokenScan, buyers: Buyer[], facts: WalletFacts[
     unknown: tracked.filter((t) => t.profile.quality.status === "unknown").length,
     unknownByReason: countUnknownByReason(tracked.map((t) => t.profile.quality)),
     highConfidence: tracked.filter((t) => t.profile.confidence === "HIGH").length,
+    highConfidenceData: tracked.filter((t) => t.profile.dataConfidence === "HIGH").length,
+    highQualityMeasured: hqMeasured.length,
+    highQualityWithoutHighRiskFlags: hqMeasured.filter((t) => t.profile.risk.maxApplied !== "high").length,
     related,
     creatorBuys,
     launchSlotBuyers,

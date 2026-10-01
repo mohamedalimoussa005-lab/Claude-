@@ -283,6 +283,17 @@ incomplet » est un statut de données, pas un motif suspect. Confidence reste L
 les totaux et leurs clusters ; high-quality ne compte que des Quality mesurées ; compteurs `measured`, `unknown`
 et `unknownByReason`.
 
+**Data Confidence et Risk observations (B1)** : `dataConfidence` ne décrit que les données — UNKNOWN si la
+Quality est UNKNOWN, sinon HIGH ≥ 25 positions évaluables, MEDIUM ≥ 10, LOW en dessous (positions évaluables,
+pas reconstruites) ; aucun flag ne la plafonne. `risk` résume les flags existants : sévérité maximale observée et
+appliquée, flags appliqués, neutralisés, ou simples observations sur une Quality UNKNOWN (aucune pénalité
+retirée) ; « Historique trop incomplet » n'en fait pas partie. `confidence` reste l'indicateur historique
+(mêmes seuils, plafonné HIGH → MEDIUM une fois par un flag HIGH appliqué). Un wallet peut donc avoir Data
+Confidence HIGH et `fundedByCreator` HIGH. Compteurs ajoutés, descriptifs et **jamais des prédictions de
+rentabilité** : `highConfidenceData` (Data Confidence HIGH), `highQualityMeasured` (Quality mesurée ≥ 60 et
+Data Confidence MEDIUM/HIGH — aujourd'hui le même ensemble que `highQuality`) et
+`highQualityWithoutHighRiskFlags` (le même ensemble sans flag HIGH appliqué).
+
 **Cluster adjustment** : les wallets potentiellement liés forment un seul cluster indépendant
 (« 3 wallets detected, 1 independent cluster »).
 
