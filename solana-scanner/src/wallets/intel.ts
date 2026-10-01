@@ -10,7 +10,7 @@ import type { WalletHistory } from "../onchain/types.ts";
 import { WALLET_CONFIG } from "./config.ts";
 import type { WalletConfig } from "./config.ts";
 import { profileWallet } from "./profile.ts";
-import type { CreatorFunding, WalletProfile } from "./profile.ts";
+import type { CreatorFunding, QualityUnknownReason, WalletProfile, WalletQuality } from "./profile.ts";
 import type { Trade } from "./trades.ts";
 import type { LaunchTimes, PricesSol, TokenScan, WalletFacts } from "./types.ts";
 import type { CreatorDistribution } from "./historyFacts.ts";
@@ -107,6 +107,12 @@ export interface WalletIntel {
   independentClusters: number;
   highQuality: number;
   historiesReconstructed: number;
+  /** Wallets with a measured Wallet Quality (complete history). */
+  measured: number;
+  /** Wallets whose Wallet Quality is UNKNOWN; they stay in the totals and their clusters. */
+  unknown: number;
+  /** UNKNOWN wallets per reason code. */
+  unknownByReason: Record<QualityUnknownReason["code"], number>;
   highConfidence: number;
   related: RelatedWallets;
   recentEntries: { address: string; time: number | null; sol: number; cluster: number | null }[];
@@ -307,8 +313,11 @@ export function buildIntel(scan: TokenScan, buyers: Buyer[], facts: WalletFacts[
     buyersIdentified: buyers.length,
     tracked,
     independentClusters: new Set(tracked.map((t) => t.cluster)).size,
-    highQuality: tracked.filter((t) => t.profile.quality >= c.highQualityThreshold && t.profile.confidence !== "LOW").length,
+    highQuality: tracked.filter((t) => t.profile.quality.status === "measured" && t.profile.quality.value >= c.highQualityThreshold && t.profile.confidence !== "LOW").length,
     historiesReconstructed: tracked.filter((t) => t.profile.facts.trades !== null).length,
+    measured: tracked.filter((t) => t.profile.quality.status === "measured").length,
+    unknown: tracked.filter((t) => t.profile.quality.status === "unknown").length,
+    unknownByReason: countUnknownByReason(tracked.map((t) => t.profile.quality)),
     highConfidence: tracked.filter((t) => t.profile.confidence === "HIGH").length,
     related,
     creatorBuys,
@@ -348,4 +357,10 @@ export function withDiagnostics(
   };
   const analysisStatus: AnalysisStatus = tokenFatal ? "failed" : Object.keys(failureKinds).length ? "partial" : "complete";
   return { analysisStatus, diagnostics };
+}
+
+export function countUnknownByReason(qs: WalletQuality[]): Record<QualityUnknownReason["code"], number> {
+  const out: Record<QualityUnknownReason["code"], number> = { history_incomplete: 0, provider_failure: 0, skipped: 0 };
+  for (const q of qs) if (q.status === "unknown") out[q.reason.code]++;
+  return out;
 }

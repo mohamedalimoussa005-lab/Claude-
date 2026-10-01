@@ -7,6 +7,7 @@ import { profileWallet } from "../src/wallets/profile.ts";
 import type { ProfileContext, WalletProfile } from "../src/wallets/profile.ts";
 import type { Trade } from "../src/wallets/trades.ts";
 import type { TokenScan, WalletFacts } from "../src/wallets/types.ts";
+import { qv } from "./helpers/quality.ts";
 
 const key = (n: number) => base58Encode(new Uint8Array(32).fill(n));
 const W = key(10);
@@ -26,7 +27,7 @@ const BEFORE = {
   ref3: { raw: 33.7, penalties: 37, quality: 0, confidence: "LOW" },
   ref3b: { penalties: 24, quality: 10 },
 };
-const suppressed = (p: WalletProfile) => p.flags.filter((f) => !f.penaltyApplied).map((f) => `${f.key}<${f.suppressedBy}`);
+const suppressed = (p: WalletProfile) => p.flags.filter((f) => !f.penaltyApplied && f.suppressedBy !== null).map((f) => `${f.key}<${f.suppressedBy}`);
 
 /** Profile summary: what the score is made of. */
 export function summary(p: WalletProfile) {
@@ -36,7 +37,7 @@ export function summary(p: WalletProfile) {
     flags: p.flags.map((f) => f.key),
     raw,
     penalties: penaltyItem ? -penaltyItem.points : 0,
-    quality: p.quality,
+    quality: qv(p.quality),
     confidence: p.confidence,
   };
 }
@@ -186,11 +187,12 @@ test("LIMIT: related without link provenance (no relatedLinks) → never suppres
   assert.equal(summary(p).penalties, 37);
 });
 
-test("LIMIT: busy by signature count only (≥ 5,000) + incomplete: no shared evidence, unchanged (floor at 0)", () => {
+test("LIMIT: busy by signature count only (≥ 5,000) + incomplete: no shared evidence, Quality UNKNOWN (never an implicit 0)", () => {
   const p = profileWallet(facts({ trades: null, historyComplete: false, signatureCount: 6000 }), ctx(), min(1));
   assert.deepEqual(p.flags.map((x) => x.key), ["busy", "incomplete"]);
   assert.deepEqual(suppressed(p), []);
-  assert.equal(p.quality, 0);
+  assert.deepEqual(p.quality, { status: "unknown", reason: { code: "history_incomplete", details: [] } });
+  assert.equal(p.flags.find((x) => x.key === "busy")!.penaltyApplied, true, "observation kept as is");
   assert.equal(p.confidence, "LOW");
 });
 

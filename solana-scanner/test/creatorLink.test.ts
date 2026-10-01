@@ -8,6 +8,7 @@ import { checkFunders } from "../src/wallets/collect.ts";
 import type { WalletRpc } from "../src/wallets/collect.ts";
 import { WALLET_CONFIG } from "../src/wallets/config.ts";
 import { buildIntel } from "../src/wallets/intel.ts";
+import { qv } from "./helpers/quality.ts";
 import type { Buyer } from "../src/wallets/intel.ts";
 import { classifyCreatorLink, profileWallet } from "../src/wallets/profile.ts";
 import type { CreatorFunding, ProfileContext } from "../src/wallets/profile.ts";
@@ -65,7 +66,7 @@ test("C: same funder verified NOT busy, funded within the relationship window �
   assert.equal(p.creatorLink?.type, "sameFunderClose");
   assert.equal(p.creatorLink?.strength, "strong");
   assert.equal(creatorFlag(p)?.severity, "high");
-  assert.equal(p.quality, Math.max(0, baseline(p.facts).quality - WALLET_CONFIG.quality.penalties.high));
+  assert.equal(qv(p.quality), Math.max(0, qv(baseline(p.facts).quality) - WALLET_CONFIG.quality.penalties.high));
 });
 
 test("D: same funder verified NOT busy, funded at different times → medium, not HIGH", () => {
@@ -82,7 +83,7 @@ test("E: same BUSY funder → weak, descriptive only: no flag, no penalty", () =
     assert.equal(p.creatorLink?.type, "sameBusyFunder");
     assert.equal(p.creatorLink?.strength, "weak");
     assert.equal(creatorFlag(p), null);
-    assert.equal(p.quality, baseline(p.facts).quality, "no -25 (nor any other) penalty");
+    assert.equal(qv(p.quality), qv(baseline(p.facts).quality), "no -25 (nor any other) penalty");
     assert.ok(p.unknowns.some((u) => u.includes("relation faible") && u.includes("non pénalisé")));
   }
 });
@@ -95,7 +96,7 @@ test("F / unknown safety: funder activity UNKNOWN → never presumed rare, never
     assert.equal(link?.strength, "unknown");
     const p = profileWallet(facts(), c, null);
     assert.equal(creatorFlag(p), null);
-    assert.equal(p.quality, baseline(p.facts).quality);
+    assert.equal(qv(p.quality), qv(baseline(p.facts).quality));
     assert.ok(p.unknowns.some((u) => u.includes("activité du financeur inconnue")));
   }
   // The wallet-side count describes the same funder: when it is counted, it is used.
@@ -248,7 +249,7 @@ test("BUBBLE regression: FHw4-like wallet sharing a busy funder with the deploym
   assert.ok(!p.flags.some((f) => f.key === "sameFunderAsCreator"));
   assert.ok(!p.flags.some((f) => f.severity === "high"));
   assert.equal(p.creatorLink?.strength, "weak");
-  assert.equal(p.quality, none.quality, "no -25 from the shared busy funder");
+  assert.equal(qv(p.quality), qv(none.quality), "no -25 from the shared busy funder");
   assert.deepEqual(p.metrics, none.metrics, "history / PnL untouched");
   const intel = buildIntel(scan, [buyer(key(180), 0)], [fhw4], { creator: CREATOR, creatorFunder: key(181), creatorFunding: busyCreator.creatorFunding, holdersPct: null, excluded: () => false, launchTimes: {}, pricesSol: {}, now: t(600) });
   assert.equal(intel.related.groups.length, 0);

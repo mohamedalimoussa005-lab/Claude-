@@ -10,6 +10,7 @@ import type { ProfileContext } from "../src/wallets/profile.ts";
 import { decodeTrade, WSOL_MINT } from "../src/wallets/trades.ts";
 import type { Trade } from "../src/wallets/trades.ts";
 import type { TokenScan, WalletFacts } from "../src/wallets/types.ts";
+import { qv } from "./helpers/quality.ts";
 
 const key = (n: number) => base58Encode(new Uint8Array(32).fill(n));
 const MINT = key(1);
@@ -124,7 +125,7 @@ test("one or two lucky trades never make a high-quality wallet", () => {
   const p = profileWallet(facts({ trades: [trade(MINT, "buy", 1, 100, min(1)), trade(MINT, "sell", 20, 100, min(30))] }), ctx(), min(1));
   assert.equal(p.metrics!.evaluated, 1);
   assert.equal(p.metrics!.best!.totalReturnEst, 19);
-  assert.ok(p.quality < WALLET_CONFIG.highQualityThreshold, `quality ${p.quality}`);
+  assert.ok(qv(p.quality) < WALLET_CONFIG.highQualityThreshold, `quality ${qv(p.quality)}`);
   assert.equal(p.confidence, "LOW");
 });
 
@@ -138,7 +139,7 @@ test("a long consistent complete history can reach HIGH confidence", () => {
   const p = profileWallet(facts({ signatureCount: 70, trades }), ctx(), min(0));
   assert.equal(p.metrics!.evaluated, 30);
   assert.equal(p.confidence, "HIGH");
-  assert.ok(p.quality >= WALLET_CONFIG.highQualityThreshold, `quality ${p.quality}`);
+  assert.ok(qv(p.quality) >= WALLET_CONFIG.highQualityThreshold, `quality ${qv(p.quality)}`);
 });
 
 test("history too long for the free RPC: metrics UNKNOWN, LOW confidence, bot-like flag", () => {
@@ -148,7 +149,8 @@ test("history too long for the free RPC: metrics UNKNOWN, LOW confidence, bot-li
   assert.ok(p.flags.some((f) => f.key === "busy"));
   assert.ok(p.flags.some((f) => f.key === "incomplete"));
   assert.ok(p.unknowns.some((u) => u.includes("UNKNOWN")));
-  assert.equal(p.quality, 0);
+  assert.equal(p.quality.status, "unknown", "incomplete history: Quality UNKNOWN, never 0");
+  assert.equal(p.flags.find((f) => f.key === "incomplete")!.group, "data");
 });
 
 test("suspicious patterns are penalised: fresh wallet, funded just before launch, linked to the deployer", () => {

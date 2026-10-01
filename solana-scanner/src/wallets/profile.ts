@@ -4,6 +4,7 @@
  * Pure and deterministic.
  */
 
+import type { FailureKind } from "../history/failure.ts";
 import type { LinkStrength, LinkType } from "../onchain/clusters.ts";
 import { ONCHAIN_CONFIG } from "../onchain/config.ts";
 import { interpolate } from "../scoring/curve.ts";
@@ -55,8 +56,26 @@ export interface WalletMetrics {
   unrealizedPnlSolEst: number | null;
 }
 
-/** Phenomenon a penalty describes; within one, the same evidence is penalised once. */
-export type FlagGroup = "funding_event" | "automation" | "funding_link";
+/**
+ * Phenomenon a penalty describes; within one, the same evidence is penalised once.
+ * "data" is a data status (incomplete history), never a suspicious pattern and never a penalty.
+ */
+export type FlagGroup = "funding_event" | "automation" | "funding_link" | "data";
+
+/** Reliable facts about why a history is incomplete (from the history layer's own records only). */
+export type IncompleteDetail = "history_too_long" | "completion_budget" | "deep_disabled" | "deep_incomplete";
+
+/** Why Wallet Quality could not be computed. */
+export type QualityUnknownReason =
+  | { code: "history_incomplete"; details: IncompleteDetail[] }
+  | { code: "provider_failure"; kind: FailureKind }
+  | { code: "skipped"; kind: FailureKind };
+
+/**
+ * Wallet Quality: a number only when the history is complete (facts.trades
+ * !== null); otherwise UNKNOWN with its reason — never 0 by default.
+ */
+export type WalletQuality = { status: "measured"; value: number } | { status: "unknown"; reason: QualityUnknownReason };
 
 export interface WalletFlag {
   key: string;
@@ -84,7 +103,7 @@ export interface WalletProfile {
   facts: WalletFacts;
   metrics: WalletMetrics | null;
   flags: WalletFlag[];
-  quality: number;
+  quality: WalletQuality;
   qualityItems: QualityItem[];
   confidence: WalletConfidence;
   /** Things that could not be measured. */
@@ -286,8 +305,9 @@ export function detectFlags(f: WalletFacts, ctx: ProfileContext, entryTime: numb
       add("buysEverything", "Achète presque tous les nouveaux tokens", "low", `${tokens} tokens différents sur ${f.signatureCount} transactions`, "automation", ["tokenBreadth"]);
     }
   }
-  if (!f.trades) add("incomplete", "Historique trop incomplet", "low", f.historyNote);
-  return dedupePenalties(flags);
+  // Data status, not a suspicious pattern: it is exactly what makes Quality UNKNOWN.
+  if (!f.trades) add("incomplete", "Historique trop incomplet", "low", f.historyNote, "data");
+  return dedupePenalties(flags).map((fl) => (fl.group === "data" ? { ...fl, penaltyApplied: false, suppressedBy: null } : fl));
 }
 
 const SEVERITY_RANK: Record<WalletFlag["severity"], number> = { high: 3, medium: 2, low: 1 };
@@ -299,7 +319,7 @@ const SEVERITY_RANK: Record<WalletFlag["severity"], number> = { high: 3, medium:
  * evidence is never suppressed and never covers another one.
  */
 export function dedupePenalties(flags: WalletFlag[]): WalletFlag[] {
-  const groups = new Set(flags.map((fl) => fl.group).filter((g): g is FlagGroup => g !== null));
+  const groups = new Set(flags.map((fl) => fl.group).filter((g): g is FlagGroup => g !== null && g !== "data"));
   for (const g of groups) {
     const inGroup = flags.filter((fl) => fl.group === g).sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity]);
     const applied: WalletFlag[] = [];
@@ -340,21 +360,58 @@ export function profileWallet(f: WalletFacts, ctx: ProfileContext, entryTime: nu
     if (metrics.positions.some((p) => p.heldValueSolEst === null)) unknowns.push("Prix actuel inconnu pour certains tokens encore détenus : leur rendement n'est pas estimé.");
     unknowns.push("Multiple maximum après l'entrée : non calculable sans historique de prix (OHLCV) — le RPC ne fournit pas de prix.");
   } else {
-    items.push({ label: "Historique", detail: f.historyNote, points: 0, max: q.sampleSize.max + q.consistency.max + q.earlyEntry.max + q.realized.max + q.riskAdjusted.max + q.completeness.max });
     unknowns.push(`Historique non reconstruit : ${f.historyNote}. Trades, PnL, rendements, entrées précoces et durée de détention : UNKNOWN.`);
   }
 
-  const applied = flags.filter((fl) => fl.penaltyApplied);
+  // Penalties only exist on a measured score; on an UNKNOWN one the flags are observations.
+  const applied = f.trades ? flags.filter((fl) => fl.penaltyApplied && fl.group !== "data") : [];
   const penalty = applied.reduce((s, fl) => s + q.penalties[fl.severity], 0);
   if (penalty) items.push({ label: "Pénalités (motifs suspects)", detail: applied.map((fl) => fl.label).join(", "), points: -penalty, max: 0 });
-  const duplicates = flags.filter((fl) => !fl.penaltyApplied);
+  const duplicates = f.trades ? flags.filter((fl) => !fl.penaltyApplied && fl.suppressedBy !== null) : [];
   if (duplicates.length) items.push({ label: "Pénalités neutralisées (même preuve)", detail: duplicates.map((fl) => `${fl.label} (déjà couvert par ${flags.find((x) => x.key === fl.suppressedBy)?.label ?? fl.suppressedBy})`).join(", "), points: 0, max: 0 });
   for (const it of items) it.points = r1(it.points);
-  const quality = Math.max(0, Math.min(100, Math.round(items.reduce((s, it) => s + it.points, 0))));
+  const quality: WalletQuality = f.trades
+    ? { status: "measured", value: Math.max(0, Math.min(100, Math.round(items.reduce((s, it) => s + it.points, 0)))) }
+    : { status: "unknown", reason: qualityUnknownReason(f) };
 
   const n = metrics?.evaluated ?? 0;
   let confidence: WalletConfidence = f.trades && n >= c.confidence.highMinPositions ? "HIGH" : f.trades && n >= c.confidence.mediumMinPositions ? "MEDIUM" : "LOW";
   if (applied.some((fl) => fl.severity === "high") && confidence === "HIGH") confidence = "MEDIUM";
 
   return { address: f.address, facts: f, metrics, flags, quality, qualityItems: items, confidence, unknowns, creatorLink };
+}
+
+/** Why the history could not be scored, from recorded facts only (failure record, history-layer decisions). */
+export function qualityUnknownReason(f: WalletFacts): QualityUnknownReason {
+  // Only a failure of the history read itself explains the missing trades.
+  const hist = f.failure?.stages.find((st) => st.stage === "history");
+  if (f.failure && hist) return f.failure.skipped ? { code: "skipped", kind: hist.kind } : { code: "provider_failure", kind: hist.kind };
+  const h = f.history;
+  const details: IncompleteDetail[] = [];
+  if (h) {
+    if (h.quickCompletion.skippedReason === "history_too_long") details.push("history_too_long");
+    if (h.quickCompletion.attempted && h.quickCompletion.stopReason === "quick_completion_budget") details.push("completion_budget");
+    if (h.deep.skippedReason === "deep_disabled") details.push("deep_disabled");
+    if (h.deep.attempted) details.push("deep_incomplete");
+  }
+  return { code: "history_incomplete", details };
+}
+
+/** Text form: "74", "UNKNOWN (history_incomplete: history_too_long, deep_disabled)", "UNKNOWN (provider_failure: timeout)". Never 0 for UNKNOWN. */
+export function formatQuality(q: WalletQuality): string {
+  if (q.status === "measured") return String(q.value);
+  const r = q.reason;
+  const detail = r.code === "history_incomplete" ? r.details.join(", ") : r.kind;
+  return `UNKNOWN (${r.code}${detail ? `: ${detail}` : ""})`;
+}
+
+/** Flags split for display: data status, observations that cost points, and the rest (duplicates, or observations on an UNKNOWN score). */
+export function presentFlags(p: WalletProfile): { dataStatus: WalletFlag[]; penalised: WalletFlag[]; notPenalised: WalletFlag[] } {
+  const measured = p.quality.status === "measured";
+  const others = p.flags.filter((fl) => fl.group !== "data");
+  return {
+    dataStatus: p.flags.filter((fl) => fl.group === "data"),
+    penalised: measured ? others.filter((fl) => fl.penaltyApplied) : [],
+    notPenalised: measured ? others.filter((fl) => !fl.penaltyApplied) : others,
+  };
 }

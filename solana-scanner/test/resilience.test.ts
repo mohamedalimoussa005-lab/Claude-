@@ -265,7 +265,10 @@ test("G: a provider failure adds no flag and no penalty — same Quality as the 
     const ctx = { creator: CREATOR, creatorFunder: null, launchTime: T0 * 1000, relatedTo: [], launchTimes: {}, pricesSol: {}, now: (T0 + 86_400) * 1000 };
     const withF = profileWallet(facts, ctx, t.firstBuy?.time ?? null);
     const without = profileWallet(clean, ctx, t.firstBuy?.time ?? null);
-    assert.equal(withF.quality, without.quality, `${t.address}: quality`);
+    // Same status; a measured value is identical. An UNKNOWN score only names a different reason (the failure).
+    assert.equal(withF.quality.status, without.quality.status, `${t.address}: quality status`);
+    if (withF.quality.status === "measured") assert.deepEqual(withF.quality, without.quality, `${t.address}: quality`);
+    else assert.ok(withF.quality.reason.code === "provider_failure" || withF.quality.reason.code === "skipped", `${t.address}: reason`);
     assert.deepEqual(withF.flags.map((x) => x.key), without.flags.map((x) => x.key));
     assert.ok(!withF.flags.some((x) => /quota|timeout|network|failure|error/i.test(x.key + x.label)));
   }

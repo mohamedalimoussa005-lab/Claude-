@@ -170,7 +170,7 @@ test("B: 80 known transactions but an incomplete history → no trades, no win r
   // Same wallet with a known, old origin: identical flags → the UNKNOWN age added nothing.
   const known = profileWallet({ ...f, firstSeen: (T0 - 5000 * HOUR) * 1000 }, ctx(), (T0 - 100 * HOUR) * 1000);
   assert.deepEqual(p.flags.map((x) => x.key), known.flags.map((x) => x.key));
-  assert.equal(p.quality, known.quality);
+  assert.deepEqual(p.quality, known.quality);
 });
 
 // ─── C: D12R-like ────────────────────────────────────────────────────────

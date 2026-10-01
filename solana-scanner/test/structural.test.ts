@@ -177,7 +177,7 @@ test("G: structural wallet with an incomplete history → UNKNOWN, no metrics, n
   // Same facts profiled as an ordinary buyer (same context) → same flags, Quality, Confidence.
   const asBuyer = profileWallet(p.facts, { creator: CREATOR, creatorFunder: null, launchTime: intel.scan.launch?.time ?? null, relatedTo: [], launchTimes: {}, pricesSol: {}, now: Date.now() }, null);
   assert.deepEqual(asBuyer.flags.map((f) => f.key), p.flags.map((f) => f.key));
-  assert.equal(asBuyer.quality, p.quality);
+  assert.deepEqual(asBuyer.quality, p.quality);
   assert.equal(asBuyer.confidence, p.confidence);
   // Complete structural wallets get the ordinary metrics.
   assert.ok(tw(intel, H[0]).profile.facts.trades !== null);

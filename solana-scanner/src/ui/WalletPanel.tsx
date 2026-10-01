@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { WALLET_CONFIG, WALLET_DISCLAIMER } from "../wallets/config.ts";
 import type { TrackedWallet, WalletIntel } from "../wallets/intel.ts";
+import { formatQuality, presentFlags } from "../wallets/profile.ts";
 import { shortAddress } from "./format.ts";
 
 export type WalletState = { status: "loading" } | { status: "done"; intel: WalletIntel } | { status: "error"; error: string };
@@ -70,7 +71,9 @@ function WalletIntelView({ intel }: { intel: WalletIntel }) {
         <div>
           <span className="muted">High-quality histories</span>
           <strong className="big">{intel.highQuality}</strong>
-          <span className="muted small-text">{intel.historiesReconstructed} historique(s) reconstruit(s)</span>
+          <span className="muted small-text">
+            {intel.historiesReconstructed} historique(s) reconstruit(s) · Quality mesurée {intel.measured} · UNKNOWN {intel.unknown}
+          </span>
         </div>
       </div>
 
@@ -141,7 +144,7 @@ function WalletIntelView({ intel }: { intel: WalletIntel }) {
                     {t.solSpent.toFixed(2)} SOL
                     <div className="muted small-text">mcap entrée {usd(t.entryMcapUsdEst)} est.</div>
                   </td>
-                  <td className="num">{t.profile.quality}</td>
+                  <td className="num">{t.profile.quality.status === "measured" ? t.profile.quality.value : "UNKNOWN"}</td>
                   <td>
                     <span className={`badge conf-${t.profile.confidence.toLowerCase()}`}>{t.profile.confidence}</span>
                   </td>
@@ -184,13 +187,14 @@ function WalletProfileView({ w }: { w: TrackedWallet }) {
   const p = w.profile;
   const f = p.facts;
   const m = p.metrics;
+  const pf = presentFlags(p);
   return (
     <div className="wallet-profile">
       <h4>
         WALLET PROFILE — <code>{w.address}</code>
       </h4>
       <p className="small-text">
-        Wallet Quality <strong>{p.quality}/100</strong> · Confidence <span className={`badge conf-${p.confidence.toLowerCase()}`}>{p.confidence}</span> ·
+        Wallet Quality <strong>{p.quality.status === "measured" ? `${p.quality.value}/100` : formatQuality(p.quality)}</strong> · Confidence <span className={`badge conf-${p.confidence.toLowerCase()}`}>{p.confidence}</span> ·
         cluster {w.cluster}
       </p>
 
@@ -232,19 +236,33 @@ function WalletProfileView({ w }: { w: TrackedWallet }) {
       <p className="small-text">{m ? `Médiane ${mins(m.medianHoldMinutes)} (positions entièrement vendues)` : "UNKNOWN"}</p>
 
       <h5>Suspicious patterns</h5>
-      {p.flags.length === 0 ? (
+      {pf.penalised.length + pf.notPenalised.length === 0 ? (
         <p className="muted small-text">Aucun motif suspect détecté par les vérifications disponibles.</p>
       ) : (
         <ul className="signals neg small-text">
-          {p.flags.map((fl) => (
+          {[...pf.penalised, ...pf.notPenalised].map((fl) => (
             <li key={fl.key}>
               <strong>{fl.label}</strong> ({fl.severity}) — {fl.detail}
-              {!fl.penaltyApplied && (
-                <span className="muted"> · pénalité non appliquée : même preuve que « {p.flags.find((x) => x.key === fl.suppressedBy)?.label ?? fl.suppressedBy} »</span>
+              {p.quality.status === "unknown" ? (
+                <span className="muted"> · observation, aucune pénalité appliquée : Quality UNKNOWN</span>
+              ) : (
+                !fl.penaltyApplied && (
+                  <span className="muted"> · pénalité non appliquée : même preuve que « {p.flags.find((x) => x.key === fl.suppressedBy)?.label ?? fl.suppressedBy} »</span>
+                )
               )}
             </li>
           ))}
         </ul>
+      )}
+      {pf.dataStatus.length > 0 && (
+        <p className="small-text">
+          Statut des données :{" "}
+          {pf.dataStatus.map((fl) => (
+            <span key={fl.key}>
+              {fl.label} — {fl.detail}
+            </span>
+          ))}
+        </p>
       )}
 
       <h5>Data completeness</h5>

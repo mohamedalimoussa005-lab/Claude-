@@ -273,6 +273,16 @@ provenance traçable (signature d'origine ou liens inconnus), rien n'est neutral
 pire position 15, complétude 20, moins les pénalités. **Wallet Confidence** : HIGH ≥ 25 positions évaluables avec
 historique complet, MEDIUM ≥ 10, sinon LOW.
 
+**Wallet Quality UNKNOWN** : la Quality est un nombre (`{ status: "measured", value }`) seulement quand
+l'historique est complet (trades reconstruits) — y compris un historique complet vide (20 points de complétude).
+Sinon elle est `{ status: "unknown", reason }`, jamais 0 par défaut : `history_incomplete` (détails relevés par
+la couche History : `history_too_long`, `completion_budget`, `deep_disabled`, `deep_incomplete`),
+`provider_failure` ou `skipped` (avec le type d'échec de la lecture d'historique). Les motifs observés
+(creatorLink, busy, fresh, related…) restent affichés comme observations, sans points retirés ; « Historique trop
+incomplet » est un statut de données, pas un motif suspect. Confidence reste LOW. Les wallets UNKNOWN restent dans
+les totaux et leurs clusters ; high-quality ne compte que des Quality mesurées ; compteurs `measured`, `unknown`
+et `unknownByReason`.
+
 **Cluster adjustment** : les wallets potentiellement liés forment un seul cluster indépendant
 (« 3 wallets detected, 1 independent cluster »).
 

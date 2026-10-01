@@ -205,7 +205,7 @@ test("J: Quality and Confidence depend on the facts only — same complete facts
   const { history: _h, ...plain } = f;
   const a = profileWallet(f, ctx, null);
   const b = profileWallet(plain, ctx, null);
-  assert.equal(a.quality, b.quality);
+  assert.deepEqual(a.quality, b.quality);
   assert.equal(a.confidence, b.confidence);
   assert.deepEqual(a.flags.map((x) => x.key), b.flags.map((x) => x.key));
   assert.equal(WALLET_CONFIG.historyLayer.quickCompletion.enabled, true);
