@@ -70,23 +70,24 @@ const penaltyItem = (p: WalletProfile) => p.qualityItems.find((i) => i.label.sta
 
 // ─── measured boundary ───────────────────────────────────────────────────
 
-test("A: Q0 truly measured — complete empty history (raw 20) − fundedByCreator 25 → measured 0", () => {
-  const p = profileWallet(facts({ trades: [], funder: CREATOR }), ctx(), min(1));
+test("A: Q0 truly measured — one evaluable losing position − fundedByCreator 25 → measured 0", () => {
+  const p = profileWallet(facts({ trades: [trade(key(100), "buy", 1, min(-100)), trade(key(100), "sell", 0.2, min(-90))], funder: CREATOR }), ctx(), min(1));
+  assert.equal(p.metrics!.evaluated, 1);
   assert.deepEqual(p.quality, { status: "measured", value: 0 });
   assert.equal(penaltyItem(p)?.points, -WALLET_CONFIG.quality.penalties.high);
   assert.equal(formatQuality(p.quality), "0");
 });
 
-test("B: complete history with no evaluable position → measured, current value (raw 20 kept, not fixed here)", () => {
+test("B: complete history with no evaluable position → UNKNOWN no_evaluable_position (B2; was measured 20)", () => {
   // One open position whose current price is unknown: nothing evaluable.
   const p = profileWallet(facts({ trades: [trade(key(100), "buy", 1, min(-100))] }), ctx(), min(1));
   assert.equal(p.metrics!.evaluated, 0);
-  assert.deepEqual(p.quality, { status: "measured", value: 20 });
+  assert.deepEqual(p.quality, { status: "unknown", reason: { code: "no_evaluable_position" } });
 });
 
-test("C: complete history with no transaction → measured 20", () => {
+test("C: complete history with no transaction → UNKNOWN no_evaluable_position (B2; was measured 20)", () => {
   const p = profileWallet(facts({ trades: [], signatureCount: 0 }), ctx(), min(1));
-  assert.deepEqual(p.quality, { status: "measured", value: 20 });
+  assert.deepEqual(p.quality, { status: "unknown", reason: { code: "no_evaluable_position" } });
   assert.equal(p.confidence, "LOW");
 });
 
@@ -199,7 +200,7 @@ test("M: measured / unknown counters with a breakdown by reason", () => {
   const out = intel(mix());
   assert.equal(out.measured, 2);
   assert.equal(out.unknown, 3);
-  assert.deepEqual(out.unknownByReason, { history_incomplete: 1, provider_failure: 1, skipped: 1 });
+  assert.deepEqual(out.unknownByReason, { history_incomplete: 1, no_evaluable_position: 0, provider_failure: 1, skipped: 1 });
   assert.equal(out.measured + out.unknown, out.tracked.length);
 });
 

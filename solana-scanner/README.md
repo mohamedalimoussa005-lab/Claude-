@@ -274,8 +274,8 @@ pire position 15, complétude 20, moins les pénalités. **Wallet Confidence** :
 historique complet, MEDIUM ≥ 10, sinon LOW.
 
 **Wallet Quality UNKNOWN** : la Quality est un nombre (`{ status: "measured", value }`) seulement quand
-l'historique est complet (trades reconstruits) — y compris un historique complet vide (20 points de complétude).
-Sinon elle est `{ status: "unknown", reason }`, jamais 0 par défaut : `history_incomplete` (détails relevés par
+l'historique est complet (trades reconstruits) et qu'au moins une position est évaluable.
+Sinon elle est `{ status: "unknown", reason }`, jamais 0 par défaut : `no_evaluable_position` (voir B2), `history_incomplete` (détails relevés par
 la couche History : `history_too_long`, `completion_budget`, `deep_disabled`, `deep_incomplete`),
 `provider_failure` ou `skipped` (avec le type d'échec de la lecture d'historique). Les motifs observés
 (creatorLink, busy, fresh, related…) restent affichés comme observations, sans points retirés ; « Historique trop
@@ -293,6 +293,13 @@ Confidence HIGH et `fundedByCreator` HIGH. Compteurs ajoutés, descriptifs et **
 rentabilité** : `highConfidenceData` (Data Confidence HIGH), `highQualityMeasured` (Quality mesurée ≥ 60 et
 Data Confidence MEDIUM/HIGH — aujourd'hui le même ensemble que `highQuality`) et
 `highQualityWithoutHighRiskFlags` (le même ensemble sans flag HIGH appliqué).
+
+**Performance évaluable (B2)** : un historique complet sans aucune position évaluable (aucun trade, transferts
+seuls, ventes sans achat reconstructible, positions ouvertes sans prix) n'a plus de Quality numérique (avant :
+20, les seuls points de complétude) mais `UNKNOWN (no_evaluable_position)`, avec Data Confidence LOW (les données
+sont là, la performance non) et Legacy Confidence LOW ; ce n'est ni une panne, ni un historique incomplet, ni un
+motif suspect, et `incomplete` n'est pas ajouté. Dès qu'une position est évaluable, la formule est inchangée
+(complétude 20, coefficients, pénalités, seuil 60).
 
 **Cluster adjustment** : les wallets potentiellement liés forment un seul cluster indépendant
 (« 3 wallets detected, 1 independent cluster »).

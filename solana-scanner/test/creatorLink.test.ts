@@ -22,6 +22,11 @@ const FUNDER = key(120);
 const WALLET = key(121);
 const MINUTE = 60_000;
 const t = (m: number) => T0 * 1000 + m * MINUTE;
+/** One closed, evaluable position: Quality stays measured, so penalties are visible as numbers (B2). */
+const ONE: Trade[] = [
+  { signature: "one-buy", slot: null, time: t(-2000), owner: WALLET, mint: key(122), side: "buy", tokenAmount: 1000, sol: 1 },
+  { signature: "one-sell", slot: null, time: t(-1990), owner: WALLET, mint: key(122), side: "sell", tokenAmount: 1000, sol: 1.5 },
+];
 
 const facts = (o: Partial<WalletFacts> = {}): WalletFacts => ({
   address: WALLET,
@@ -33,7 +38,7 @@ const facts = (o: Partial<WalletFacts> = {}): WalletFacts => ({
   fundingTime: t(-3000),
   funderSignatureCount: null,
   signatures: [],
-  trades: [],
+  trades: ONE,
   historyNote: "historique complet",
   undecodableTxs: 0,
   ...o,

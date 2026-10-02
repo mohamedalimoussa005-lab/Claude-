@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { WALLET_CONFIG, WALLET_DISCLAIMER } from "../wallets/config.ts";
 import type { TrackedWallet, WalletIntel } from "../wallets/intel.ts";
-import { formatQuality, formatRisk, presentFlags } from "../wallets/profile.ts";
+import { dataStatusText, formatQuality, formatRisk, presentFlags } from "../wallets/profile.ts";
 import { shortAddress } from "./format.ts";
 
 export type WalletState = { status: "loading" } | { status: "done"; intel: WalletIntel } | { status: "error"; error: string };
@@ -199,6 +199,8 @@ function WalletProfileView({ w }: { w: TrackedWallet }) {
       <p className="small-text">
         Wallet Quality <strong>{p.quality.status === "measured" ? `${p.quality.value}/100` : formatQuality(p.quality)}</strong> · Data Confidence{" "}
         <span className={`badge conf-${p.dataConfidence.toLowerCase()}`}>{p.dataConfidence}</span> · cluster {w.cluster}
+        <br />
+        Data status : {dataStatusText(p)}
         <br />
         Risk observations : {formatRisk(p.risk)}
         <br />

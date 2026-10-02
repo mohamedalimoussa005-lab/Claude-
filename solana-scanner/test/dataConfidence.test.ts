@@ -63,8 +63,10 @@ const intel = (fs: WalletFacts[], launchTimes: Record<string, number> = {}) =>
 
 // ─── Data Confidence thresholds ──────────────────────────────────────────
 
-test("thresholds: 0 → LOW (measured), 9 → LOW, 10 → MEDIUM, 24 → MEDIUM, 25 → HIGH; legacy identical without flags", () => {
-  for (const [n, level] of [[0, "LOW"], [9, "LOW"], [10, "MEDIUM"], [24, "MEDIUM"], [25, "HIGH"], [30, "HIGH"]] as const) {
+test("thresholds: 0 → LOW (Quality UNKNOWN no_evaluable_position since B2), 9 → LOW, 10 → MEDIUM, 24 → MEDIUM, 25 → HIGH; legacy identical without flags", () => {
+  const zero = profile(facts({ trades: closed(0) }));
+  assert.deepEqual([zero.quality, zero.dataConfidence, zero.confidence], [{ status: "unknown", reason: { code: "no_evaluable_position" } }, "LOW", "LOW"]);
+  for (const [n, level] of [[9, "LOW"], [10, "MEDIUM"], [24, "MEDIUM"], [25, "HIGH"], [30, "HIGH"]] as const) {
     const p = profile(facts({ trades: closed(n) }));
     assert.equal(p.quality.status, "measured", `n=${n}`);
     assert.equal(p.metrics!.evaluated, n);

@@ -376,7 +376,7 @@ export function withDiagnostics(
 }
 
 export function countUnknownByReason(qs: WalletQuality[]): Record<QualityUnknownReason["code"], number> {
-  const out: Record<QualityUnknownReason["code"], number> = { history_incomplete: 0, provider_failure: 0, skipped: 0 };
+  const out: Record<QualityUnknownReason["code"], number> = { history_incomplete: 0, no_evaluable_position: 0, provider_failure: 0, skipped: 0 };
   for (const q of qs) if (q.status === "unknown") out[q.reason.code]++;
   return out;
 }

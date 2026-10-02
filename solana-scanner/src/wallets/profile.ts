@@ -17,7 +17,8 @@ import type { LaunchTimes, PricesSol, WalletFacts } from "./types.ts";
 export type WalletConfidence = "LOW" | "MEDIUM" | "HIGH";
 /**
  * Data Confidence: how much measured data stands behind Wallet Quality, nothing else.
- * UNKNOWN when Quality is UNKNOWN; otherwise from evaluable positions only. No flag caps it.
+ * UNKNOWN when Quality is UNKNOWN for lack of history; LOW when the history is complete but nothing is
+ * evaluable; otherwise from evaluable positions only. No flag caps it.
  */
 export type DataConfidence = "HIGH" | "MEDIUM" | "LOW" | "UNKNOWN";
 
@@ -74,12 +75,15 @@ export type IncompleteDetail = "history_too_long" | "completion_budget" | "deep_
 /** Why Wallet Quality could not be computed. */
 export type QualityUnknownReason =
   | { code: "history_incomplete"; details: IncompleteDetail[] }
+  /** History complete, but no position could be evaluated (no trade, transfers only, sells without a buy, open positions without a price). */
+  | { code: "no_evaluable_position" }
   | { code: "provider_failure"; kind: FailureKind }
   | { code: "skipped"; kind: FailureKind };
 
 /**
  * Wallet Quality: a number only when the history is complete (facts.trades
- * !== null); otherwise UNKNOWN with its reason — never 0 by default.
+ * !== null) and at least one position is evaluable; otherwise UNKNOWN with its
+ * reason — never 0 by default.
  */
 export type WalletQuality = { status: "measured"; value: number } | { status: "unknown"; reason: QualityUnknownReason };
 
@@ -357,39 +361,46 @@ export function profileWallet(f: WalletFacts, ctx: ProfileContext, entryTime: nu
   if (f.trades) {
     metrics = computeMetrics(buildPositions(f.trades, ctx.launchTimes, ctx.pricesSol));
     const n = metrics.evaluated;
-    items.push({ label: "Taille de l'échantillon", detail: `${n} position(s) évaluable(s)`, points: interpolate(q.sampleSize.curve, n), max: q.sampleSize.max });
-    const winRate = n ? metrics.profitable / n : 0;
-    const weight = Math.min(1, n / q.consistency.fullAtTrades);
-    items.push({ label: "Régularité", detail: n ? `${metrics.profitable}/${n} rentables, poids ${(weight * 100).toFixed(0)} %` : "aucune position", points: interpolate(q.consistency.curve, winRate) * weight, max: q.consistency.max });
-    const earlyRate = metrics.early.known ? metrics.early.lt1h / metrics.early.known : null;
-    items.push({ label: "Entrées précoces", detail: earlyRate === null ? "lancement inconnu pour ses tokens" : `${metrics.early.lt1h}/${metrics.early.known} < 1 h`, points: earlyRate === null ? 0 : interpolate(q.earlyEntry.curve, earlyRate) * weight, max: q.earlyEntry.max });
-    if (earlyRate === null) unknowns.push("Heure de lancement inconnue pour les tokens de son historique : taux d'entrée précoce non mesuré.");
-    items.push({ label: "Performance réalisée (médiane, estimée)", detail: metrics.medianReturn === null ? "non calculable" : `${(metrics.medianReturn * 100).toFixed(0)} %`, points: metrics.medianReturn === null ? 0 : interpolate(q.realized.curve, metrics.medianReturn) * weight, max: q.realized.max });
-    items.push({ label: "Pire position (estimée)", detail: metrics.worst ? `${(metrics.worst.totalReturnEst! * 100).toFixed(0)} %` : "non calculable", points: metrics.worst ? interpolate(q.riskAdjusted.curve, metrics.worst.totalReturnEst!) * weight : 0, max: q.riskAdjusted.max });
-    items.push({ label: "Complétude des données", detail: "historique complet reconstruit", points: q.completeness.max, max: q.completeness.max });
+    if (n > 0) {
+      items.push({ label: "Taille de l'échantillon", detail: `${n} position(s) évaluable(s)`, points: interpolate(q.sampleSize.curve, n), max: q.sampleSize.max });
+      const winRate = n ? metrics.profitable / n : 0;
+      const weight = Math.min(1, n / q.consistency.fullAtTrades);
+      items.push({ label: "Régularité", detail: n ? `${metrics.profitable}/${n} rentables, poids ${(weight * 100).toFixed(0)} %` : "aucune position", points: interpolate(q.consistency.curve, winRate) * weight, max: q.consistency.max });
+      const earlyRate = metrics.early.known ? metrics.early.lt1h / metrics.early.known : null;
+      items.push({ label: "Entrées précoces", detail: earlyRate === null ? "lancement inconnu pour ses tokens" : `${metrics.early.lt1h}/${metrics.early.known} < 1 h`, points: earlyRate === null ? 0 : interpolate(q.earlyEntry.curve, earlyRate) * weight, max: q.earlyEntry.max });
+      if (earlyRate === null) unknowns.push("Heure de lancement inconnue pour les tokens de son historique : taux d'entrée précoce non mesuré.");
+      items.push({ label: "Performance réalisée (médiane, estimée)", detail: metrics.medianReturn === null ? "non calculable" : `${(metrics.medianReturn * 100).toFixed(0)} %`, points: metrics.medianReturn === null ? 0 : interpolate(q.realized.curve, metrics.medianReturn) * weight, max: q.realized.max });
+      items.push({ label: "Pire position (estimée)", detail: metrics.worst ? `${(metrics.worst.totalReturnEst! * 100).toFixed(0)} %` : "non calculable", points: metrics.worst ? interpolate(q.riskAdjusted.curve, metrics.worst.totalReturnEst!) * weight : 0, max: q.riskAdjusted.max });
+      items.push({ label: "Complétude des données", detail: "historique complet reconstruit", points: q.completeness.max, max: q.completeness.max });
+    } else {
+      unknowns.push("Historique complet, mais aucune position évaluable (aucun trade, transferts seuls, ventes sans achat ou positions ouvertes sans prix) : Wallet Quality UNKNOWN.");
+    }
     if (metrics.positions.some((p) => p.heldValueSolEst === null)) unknowns.push("Prix actuel inconnu pour certains tokens encore détenus : leur rendement n'est pas estimé.");
     unknowns.push("Multiple maximum après l'entrée : non calculable sans historique de prix (OHLCV) — le RPC ne fournit pas de prix.");
   } else {
     unknowns.push(`Historique non reconstruit : ${f.historyNote}. Trades, PnL, rendements, entrées précoces et durée de détention : UNKNOWN.`);
   }
 
+  // Quality is measured only when at least one position is evaluable on a complete history.
+  const measurable = metrics !== null && metrics.evaluated > 0;
   // Penalties only exist on a measured score; on an UNKNOWN one the flags are observations.
-  const applied = f.trades ? flags.filter((fl) => fl.penaltyApplied && fl.group !== "data") : [];
+  const applied = measurable ? flags.filter((fl) => fl.penaltyApplied && fl.group !== "data") : [];
   const penalty = applied.reduce((s, fl) => s + q.penalties[fl.severity], 0);
   if (penalty) items.push({ label: "Pénalités (motifs suspects)", detail: applied.map((fl) => fl.label).join(", "), points: -penalty, max: 0 });
-  const duplicates = f.trades ? flags.filter((fl) => !fl.penaltyApplied && fl.suppressedBy !== null) : [];
+  const duplicates = measurable ? flags.filter((fl) => !fl.penaltyApplied && fl.suppressedBy !== null) : [];
   if (duplicates.length) items.push({ label: "Pénalités neutralisées (même preuve)", detail: duplicates.map((fl) => `${fl.label} (déjà couvert par ${flags.find((x) => x.key === fl.suppressedBy)?.label ?? fl.suppressedBy})`).join(", "), points: 0, max: 0 });
   for (const it of items) it.points = r1(it.points);
-  const quality: WalletQuality = f.trades
+  const quality: WalletQuality = measurable
     ? { status: "measured", value: Math.max(0, Math.min(100, Math.round(items.reduce((s, it) => s + it.points, 0)))) }
-    : { status: "unknown", reason: qualityUnknownReason(f) };
+    : { status: "unknown", reason: f.trades ? { code: "no_evaluable_position" } : qualityUnknownReason(f) };
 
   const n = metrics?.evaluated ?? 0;
   let confidence: WalletConfidence = f.trades && n >= c.confidence.highMinPositions ? "HIGH" : f.trades && n >= c.confidence.mediumMinPositions ? "MEDIUM" : "LOW";
   if (applied.some((fl) => fl.severity === "high") && confidence === "HIGH") confidence = "MEDIUM";
 
+  // A complete history with nothing evaluable is LOW, not UNKNOWN: the data is there, the performance is not.
   const dataConfidence: DataConfidence =
-    quality.status === "unknown" ? "UNKNOWN" : n >= c.confidence.highMinPositions ? "HIGH" : n >= c.confidence.mediumMinPositions ? "MEDIUM" : "LOW";
+    quality.status === "unknown" ? (quality.reason.code === "no_evaluable_position" ? "LOW" : "UNKNOWN") : n >= c.confidence.highMinPositions ? "HIGH" : n >= c.confidence.mediumMinPositions ? "MEDIUM" : "LOW";
 
   return { address: f.address, facts: f, metrics, flags, quality, qualityItems: items, confidence, dataConfidence, risk: summarizeRisk(flags, quality), unknowns, creatorLink };
 }
@@ -428,6 +439,15 @@ export function summarizeRisk(flags: WalletFlag[], quality: WalletQuality): Risk
   };
 }
 
+/** Data status of the history behind Quality (a data fact: never a failure label or a suspicious pattern unless it is one). */
+export function dataStatusText(p: WalletProfile): string {
+  if (p.quality.status === "measured") return `historique complet, ${p.metrics!.evaluated} position(s) évaluable(s)`;
+  const r = p.quality.reason;
+  if (r.code === "no_evaluable_position") return "historique complet, mais aucune performance évaluable";
+  if (r.code === "history_incomplete") return "historique incomplet";
+  return r.code === "skipped" ? "historique non demandé (fournisseur indisponible)" : "historique non récupéré (échec fournisseur)";
+}
+
 /** Text form for scripts: "fundedByCreator HIGH", "busy MEDIUM (observé, Quality UNKNOWN)", "aucune". */
 export function formatRisk(r: RiskSummary): string {
   const one = (fl: WalletFlag, note = "") => `${fl.key} ${fl.severity.toUpperCase()}${note}`;
@@ -459,7 +479,7 @@ export function qualityUnknownReason(f: WalletFacts): QualityUnknownReason {
 export function formatQuality(q: WalletQuality): string {
   if (q.status === "measured") return String(q.value);
   const r = q.reason;
-  const detail = r.code === "history_incomplete" ? r.details.join(", ") : r.kind;
+  const detail = r.code === "history_incomplete" ? r.details.join(", ") : r.code === "no_evaluable_position" ? "" : r.kind;
   return `UNKNOWN (${r.code}${detail ? `: ${detail}` : ""})`;
 }
 

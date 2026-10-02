@@ -303,3 +303,30 @@ test("token level on the same fixtures: what the history layer establishes (no s
   assert.equal(intel.creatorDistribution?.transfers, 5);
   assert.ok(fresh.creatorFacts?.funder, "creator funder established from its history");
 });
+
+// ─── B2: complete histories with no evaluable position (real pipeline) ───
+
+test("B2: transfers only, sells without a buy, open positions without a price → Quality UNKNOWN no_evaluable_position, Data Confidence LOW", async () => {
+  const nep = { status: "unknown", reason: { code: "no_evaluable_position" } };
+  // R[1]: received the token by transfer and did nothing else → no BUY/SELL decoded.
+  const transfersOnly = await collect(R[1]);
+  assert.equal(transfersOnly.historyComplete, true);
+  assert.deepEqual(transfersOnly.trades, []);
+  // R[0]: sells what it received → no position. F: open / half-sold positions, no price → nothing evaluable.
+  const sellOnly = await collect(R[0]);
+  const openNoPrice = await collect(F);
+  for (const f of [transfersOnly, sellOnly, openNoPrice]) {
+    const p = profileWallet(f, ctx(), null);
+    assert.equal(p.metrics!.evaluated, 0, f.address);
+    assert.deepEqual(p.quality, nep, f.address);
+    assert.equal(p.dataConfidence, "LOW");
+    assert.equal(p.confidence, "LOW");
+    assert.ok(!p.flags.some((x) => x.key === "incomplete"), "complete history: no incomplete status");
+  }
+  // F with a price for its open tokens → evaluable → measured (formula unchanged).
+  const priced = profileWallet(openNoPrice, ctx({ pricesSol: { [mint(600)]: 0.000002, [mint(601)]: 0.000002 } }), null);
+  assert.ok(priced.metrics!.evaluated >= 1);
+  assert.equal(priced.quality.status, "measured");
+  // E: two closed positions → measured.
+  assert.equal(profileWallet(await collect(E), ctx(), null).quality.status, "measured");
+});
