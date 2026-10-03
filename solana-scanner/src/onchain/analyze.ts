@@ -44,6 +44,24 @@ export interface HolderAnalysis {
   adjustFactor: number;
 }
 
+export type RedFlagKey =
+  | "mintAuthority"
+  | "freezeAuthority"
+  | `extension:${string}`
+  | "topHolder"
+  | "top10Concentrated"
+  | "fewHolders"
+  | "creatorHolding"
+  | "creatorSold"
+  | "creatorTransfers"
+  | "recipientsTopHolders"
+  | "relatedGroup";
+
+export interface RedFlagFact {
+  key: RedFlagKey;
+  text: string;
+}
+
 export interface RiskItem {
   label: string;
   detail: string;
@@ -77,6 +95,8 @@ export interface OnchainAnalysis {
   confidence: OnchainConfidence;
   confidencePoints: number;
   redFlags: string[];
+  /** The same red flags, each tagged with the existing rule that produced it (emitted only from data that was obtained). */
+  redFlagFacts: RedFlagFact[];
   positives: string[];
   unknowns: string[];
 }
@@ -126,6 +146,9 @@ const RISKY_EXTENSIONS: Record<string, string> = {
   nonTransferable: "Token-2022 non transférable",
 };
 
+/** Extension name behind each risky-extension label. */
+const EXTENSION_NAME: Record<string, string> = Object.fromEntries(Object.entries(RISKY_EXTENSIONS).map(([name, label]) => [label, name]));
+
 function extensionRisks(exts: MintExtension[], c: OnchainConfig["score"]["authorities"]): RiskItem[] {
   const items: RiskItem[] = [];
   for (const e of exts) {
@@ -151,6 +174,12 @@ function category(key: RiskCategory["key"], label: string, max: number, items: R
 export function analyzeOnchain(data: OnchainData, config: OnchainConfig = ONCHAIN_CONFIG): OnchainAnalysis {
   const sc = config.score;
   const red: string[] = [];
+  const redFacts: RedFlagFact[] = [];
+  // Same text, same order as before; the key only names which existing rule produced it.
+  const flagRed = (key: RedFlagKey, text: string) => {
+    red.push(text);
+    redFacts.push({ key, text });
+  };
   const pos: string[] = [];
   const unk: string[] = [];
 
@@ -172,16 +201,16 @@ export function analyzeOnchain(data: OnchainData, config: OnchainConfig = ONCHAI
     freezeAuthority = m.freezeAuthority ? "ACTIVE" : "DISABLED";
     if (m.mintAuthority) {
       auth.push({ label: "Mint authority active", detail: m.mintAuthority, points: sc.authorities.mintActive });
-      red.push(`Mint authority ACTIVE (${m.mintAuthority}) : cette adresse peut créer de nouveaux tokens et diluer tous les holders.`);
+      flagRed("mintAuthority", `Mint authority ACTIVE (${m.mintAuthority}) : cette adresse peut créer de nouveaux tokens et diluer tous les holders.`);
     } else pos.push("Mint authority désactivée : l'offre ne peut plus être augmentée.");
     if (m.freezeAuthority) {
       auth.push({ label: "Freeze authority active", detail: m.freezeAuthority, points: sc.authorities.freezeActive });
-      red.push(`Freeze authority ACTIVE (${m.freezeAuthority}) : cette adresse peut geler des comptes de token, ce qui empêche leurs détenteurs de vendre ou transférer.`);
+      flagRed("freezeAuthority", `Freeze authority ACTIVE (${m.freezeAuthority}) : cette adresse peut geler des comptes de token, ce qui empêche leurs détenteurs de vendre ou transférer.`);
     } else pos.push("Freeze authority désactivée : aucun compte de token ne peut être gelé.");
     const extRisks = extensionRisks(m.extensions, sc.authorities);
     riskyExtensions = extRisks.map((e) => `${e.label} (${e.detail})`);
     auth.push(...extRisks);
-    for (const e of extRisks) red.push(`${e.label} (${e.detail}).`);
+    for (const e of extRisks) flagRed(`extension:${EXTENSION_NAME[e.label]}`, `${e.label} (${e.detail}).`);
     if (!extRisks.length) pos.push(m.extensions.length ? "Aucune extension Token-2022 à risque (seulement métadonnées)." : "Aucune extension Token-2022.");
   } else {
     auth.push({ label: "Mint authority inconnue", detail: describe(data.mintInfo), points: sc.authorities.unknownEach });
@@ -211,10 +240,10 @@ export function analyzeOnchain(data: OnchainData, config: OnchainConfig = ONCHAI
     const unidentified = holders.top.filter((t) => t.class.kind === "programOwned");
     for (const u of unidentified) unk.push(`${short(u.owner)} (${pct(u.pctOfSupply)}) : ${u.class.evidence}.`);
     const lnt = holders.largestNonTechnical;
-    if (lnt && top1 >= 10) red.push(`Un compte non technique (${short(lnt.owner)}, ${lnt.class.label.toLowerCase()}) détient ${pct(top1)} de l'offre ${holders.adjusted ? "hors pools / bonding curve / burn" : "(brut)"}. Un gros holder n'est pas forcément malveillant, mais il peut peser fortement sur le prix.`);
-    if (basis.top10 >= 40) red.push(`Top 10 très concentré : ${pct(basis.top10)} (${basisName}).`);
+    if (lnt && top1 >= 10) flagRed("topHolder", `Un compte non technique (${short(lnt.owner)}, ${lnt.class.label.toLowerCase()}) détient ${pct(top1)} de l'offre ${holders.adjusted ? "hors pools / bonding curve / burn" : "(brut)"}. Un gros holder n'est pas forcément malveillant, mais il peut peser fortement sur le prix.`);
+    if (basis.top10 >= 40) flagRed("top10Concentrated", `Top 10 très concentré : ${pct(basis.top10)} (${basisName}).`);
     else if (basis.top10 < 25) pos.push(`Top 10 relativement réparti : ${pct(basis.top10)} (${basisName}).`);
-    if (holders.holderCount < 100) red.push(`Seulement ${holders.holderCount} holders avec un solde non nul.`);
+    if (holders.holderCount < 100) flagRed("fewHolders", `Seulement ${holders.holderCount} holders avec un solde non nul.`);
   }
 
   // ─── 4. Deployment-associated wallet ─────────────────────────────────
@@ -237,7 +266,7 @@ export function analyzeOnchain(data: OnchainData, config: OnchainConfig = ONCHAI
         unk.push("Solde de tokens du deployment-associated wallet non vérifié.");
       } else {
         cr.push({ label: "Tokens détenus par le deployment-associated wallet", detail: pct(a.tokenPct), points: interpolate(sc.creator.holding, a.tokenPct) });
-        if (a.tokenPct >= 5) red.push(`Le deployment-associated wallet détient encore ${pct(a.tokenPct)} de l'offre.`);
+        if (a.tokenPct >= 5) flagRed("creatorHolding", `Le deployment-associated wallet détient encore ${pct(a.tokenPct)} de l'offre.`);
         else if (a.tokenPct < 0.5) pos.push(`Le deployment-associated wallet détient ${pct(a.tokenPct)} de l'offre.`);
       }
       const sells = a.events.filter((e) => e.kind === "sell");
@@ -246,11 +275,11 @@ export function analyzeOnchain(data: OnchainData, config: OnchainConfig = ONCHAI
       cr.push({ label: "Ventes récentes", detail: `${sells.length} vente(s) sur ${a.analyzedTransactions} transactions analysées`, points: interpolate(sc.creator.sells, sells.length) });
       cr.push({ label: "Volume vendu", detail: `${pct(sold)} de l'offre`, points: interpolate(sc.creator.soldPct, sold) });
       cr.push({ label: "Transferts vers d'autres wallets", detail: `${recipients.size} wallet(s) destinataire(s)`, points: interpolate(sc.creator.transferRecipients, recipients.size) });
-      if (sells.length) red.push(`Le deployment-associated wallet a vendu ${pct(sold)} de l'offre en ${sells.length} transaction(s) parmi ses ${a.analyzedTransactions} dernières analysées.`);
-      if (recipients.size >= 2) red.push(`Le deployment-associated wallet a transféré des tokens vers ${recipients.size} wallets différents (${[...recipients].map(short).join(", ")}).`);
+      if (sells.length) flagRed("creatorSold", `Le deployment-associated wallet a vendu ${pct(sold)} de l'offre en ${sells.length} transaction(s) parmi ses ${a.analyzedTransactions} dernières analysées.`);
+      if (recipients.size >= 2) flagRed("creatorTransfers", `Le deployment-associated wallet a transféré des tokens vers ${recipients.size} wallets différents (${[...recipients].map(short).join(", ")}).`);
       const stillTop = holders ? holders.top.filter((t) => recipients.has(t.owner)) : [];
       if (stillTop.length) {
-        red.push(
+        flagRed("recipientsTopHolders", 
           `${stillTop.length} wallet(s) ayant reçu des tokens du deployment-associated wallet figurent parmi les plus gros holders : ${stillTop
             .map((t) => `${short(t.owner)} (${pct(t.pctOfSupply * (holders?.adjustFactor ?? 1))})`)
             .join(", ")}.`,
@@ -277,7 +306,7 @@ export function analyzeOnchain(data: OnchainData, config: OnchainConfig = ONCHAI
     rel.push({ label: "Plus grand groupe de wallets potentiellement liés", detail: biggest ? `${biggest.members.length} wallets, ${pct(share)}` : "aucun", points: interpolate(sc.relationships.groupShare, share) });
     rel.push({ label: "Liens forts", detail: String(related.strongLinks), points: interpolate(sc.relationships.strongLinks, related.strongLinks) });
     for (const g of related.groups) {
-      red.push(`Potentially related wallets : ${g.members.map((m) => short(m.address)).join(", ")} détiennent ensemble ${pct(g.share * factor)} — ${g.reasons.join(" ; ")}. Heuristique, pas une preuve de propriétaire commun.`);
+      flagRed("relatedGroup", `Potentially related wallets : ${g.members.map((m) => short(m.address)).join(", ")} détiennent ensemble ${pct(g.share * factor)} — ${g.reasons.join(" ; ")}. Heuristique, pas une preuve de propriétaire commun.`);
     }
     const unknownFunding = related.analyzed - related.withKnownFunding;
     if (!related.groups.length) pos.push(`Aucun lien détecté entre les ${related.analyzed} plus gros wallets analysés (heuristiques limitées).`);
@@ -331,6 +360,7 @@ export function analyzeOnchain(data: OnchainData, config: OnchainConfig = ONCHAI
     confidence,
     confidencePoints,
     redFlags: red,
+    redFlagFacts: redFacts,
     positives: pos,
     unknowns: unk,
   };

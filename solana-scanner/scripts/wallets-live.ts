@@ -13,6 +13,7 @@
  */
 
 import { DexScreenerClient } from "../src/api/dexscreener.ts";
+import { assessToken, formatAssessment } from "../src/final/assessment.ts";
 import { mostLiquidPairPerToken, scanSolana } from "../src/domain/scanner.ts";
 import { ONCHAIN_CONFIG } from "../src/onchain/config.ts";
 import { createServerSolanaRpc } from "../src/rpc/serverRpc.ts";
@@ -77,6 +78,8 @@ for (const row of candidates) {
         `${p.flags.length ? ` · ⚑ ${p.flags.map((f) => f.label).join(", ")}` : ""}`,
     );
   }
+  // Final assessment from the results above only (no extra call).
+  console.log(formatAssessment(assessToken({ score: row.score, onchain: oc, wallets: intel })).split("\n").map((l) => `   ${l}`).join("\n"));
   const dg = intel.diagnostics;
   console.log(`   Analyse : ${intel.analysisStatus} · wallets ${dg.walletsCompleted} complets / ${dg.walletsPartial} partiels / ${dg.walletsSkipped} non demandés · échecs ${JSON.stringify(dg.failureKinds)} · RPC ${dg.rpcCircuit}${dg.rpcCallsSkipped ? ` (${dg.rpcCallsSkipped} appels évités)` : ""}`);
   {

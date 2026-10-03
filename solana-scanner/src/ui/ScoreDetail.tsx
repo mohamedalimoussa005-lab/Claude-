@@ -3,6 +3,7 @@ import { LABEL_DISCLAIMER } from "../scoring/config.ts";
 import { CATEGORY_ORDER } from "../scoring/score.ts";
 import type { CategoryScore, ScoredPair } from "../scoring/score.ts";
 import { ConfidenceBadge, LabelBadge } from "./LabelBadge.tsx";
+import { FinalAssessmentPanel } from "./FinalAssessmentPanel.tsx";
 import { OnchainPanel } from "./OnchainPanel.tsx";
 import type { OnchainState } from "./OnchainPanel.tsx";
 import { WalletPanel } from "./WalletPanel.tsx";
@@ -106,6 +107,7 @@ export function ScoreDetail({
           Une anomalie signale un motif inhabituel dans les données ; elle ne prouve pas une manipulation.
         </p>
 
+        <FinalAssessmentPanel row={row} onchain={onchain} wallets={wallets} />
         <OnchainPanel state={onchain} onAnalyze={onAnalyzeOnchain} />
         <WalletPanel state={wallets} onchainReady={onchain?.status === "done"} onAnalyze={onAnalyzeWallets} />
 

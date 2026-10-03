@@ -431,3 +431,35 @@ Code : `src/rpc/serverRpc.ts` (Node uniquement ; jamais importé par `src/ui`). 
 | Complétude | `historyComplete` seulement si la fin de l'historique est réellement atteinte (`quick_completion_end`) ; budget atteint (`quick_completion_budget`) → incomplet, aucune métrique globale |
 | `origin.signaturesScanned` | signatures réellement listées par la recherche d'origine (échouées comprises), jamais les transactions décodées ; `origin.totalSignatures` = taille exacte quand le début a été atteint |
 | Borne inférieure | `signatureCount` ≥ signatures parcourues (5 000, 10 000…) ; alimente le flag existant « bot / haute fréquence » sans changer son seuil ni sa pénalité |
+
+## Final Decision Engine V1 (`src/final/assessment.ts`)
+
+Une décision par token à partir des résultats déjà calculés — aucun score global pondéré, aucun nouvel appel
+réseau. DEX = intérêt / timing, on-chain = sécurité structurelle, Wallet Intelligence = confirmation /
+warnings, Data Confidence = incertitude. Labels : **MOMENTUM, WATCH, CAUTION, AVOID, NO SIGNAL** (jamais
+SAFE / BUY / SELL) ; ils décrivent ce que le scanner a observé, pas une recommandation.
+
+1. **Base = label DEX inchangé** : MOMENTUM → MOMENTUM, WATCH → WATCH, HIGH RISK → CAUTION, aucun → NO SIGNAL.
+   Les wallets ne relèvent jamais la décision (NO SIGNAL reste NO SIGNAL).
+2. **AVOID** (hard blocker confirmé, quelle que soit la base) : freeze authority ACTIVE, Token-2022
+   `nonTransferable`, `defaultAccountState = frozen`, `permanentDelegate` actif.
+3. **CAUTION** (si la base est MOMENTUM / WATCH / HIGH RISK) : mint authority ACTIVE, Token-2022 `transferHook`,
+   top 10 ≥ 70 % sur la base **ajustée** uniquement (seuil Step 3 existant), deployment wallet ≥ 5 % de l'offre,
+   ou ventes / transferts du deployment wallet (red flags Step 3 existants).
+4. Sinon, la base DEX.
+
+Seuls des faits **confirmés** déclenchent un gate : les red flags Step 3 sont désormais étiquetés à la source
+(`redFlagFacts`, mêmes textes que `redFlags`), émis uniquement à partir de données obtenues. Le score On-chain
+Risk brut n'est **jamais** un gate (il compte aussi les données inconnues) ; il reste affiché. Données
+indisponibles, holders non classés, Quality UNKNOWN, Data Confidence LOW / UNKNOWN, `sameFunderUnknownActivity`
+→ UNCERTAINTY, jamais NEGATIVE. Relations fortes (`sameTx`, `fundedBy`, `sharedTx`, `sameFunderClose`) et
+liens forts avec le deployment wallet → NEGATIVE sans dégrader le label (non calibré en V1) ; `sameFunder` →
+negative plus faible ; `sameBusyFunder` / `timing` → INFORMATIONAL. Wallets de qualité mesurée sans risque HIGH
+→ POSITIVE (confirmation) ; Quality mesurée sous 60 → NEGATIVE faible (pas un signe de scam) ; `transferFee`
+→ NEGATIVE avec sa valeur, sans gate.
+
+**Déduplication de présentation** : une relation Step 3 et une relation Step 4 ne font qu'une raison seulement
+si elles ont la même identité (type + paire de wallets + clé du lien) ; un `fundedByCreator` et le lien
+`fundedBy` identique (wallet ↔ deployment wallet) aussi. Sans identité commune fiable, rien n'est fusionné.
+Aucun score Step 2 / 3 / 4, aucune pénalité ni aucun cluster ne change. Affichage : panneau FINAL ASSESSMENT
+dans le détail d'un token ; `scripts/wallets-live.ts` imprime `formatAssessment`.
