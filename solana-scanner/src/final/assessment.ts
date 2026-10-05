@@ -100,28 +100,72 @@ function relationReasons(links: { link: WalletLink; source: ReasonSource }[]): R
     cur.sources.add(source);
     byPair.set(id, cur);
   }
-  // Presentation: pairs sharing the same keyed evidence (funder / funding signature) on one line.
-  const lines = new Map<string, { type: LinkType; key: string | null; strength: WalletLink["strength"]; pairs: [string, string][]; sources: Set<ReasonSource> }>();
+  // Presentation only (relations, clusters and counts unchanged):
+  //   keyed evidence (funder / funding signature) → one line per (type, key);
+  //   sharedTx → one line per connected component of sharedTx pairs;
+  //   other types → one line per pair.
+  type Line = { type: LinkType; key: string | null; strength: WalletLink["strength"]; pairs: { a: string; b: string; sources: Set<ReasonSource> }[] };
+  const lines = new Map<string, Line>();
+  const shared: { id: string; link: WalletLink; sources: Set<ReasonSource> }[] = [];
   for (const [id, { link, sources }] of byPair) {
+    if (link.type === "sharedTx") {
+      shared.push({ id, link, sources });
+      continue;
+    }
     const lineId = KEYED.includes(link.type) && link.key !== null ? `${link.type}|${link.key}` : id;
-    const cur = lines.get(lineId) ?? { type: link.type, key: link.key, strength: link.strength, pairs: [], sources: new Set<ReasonSource>() };
-    cur.pairs.push([link.a, link.b]);
-    for (const s of sources) cur.sources.add(s);
+    const cur = lines.get(lineId) ?? { type: link.type, key: link.key, strength: link.strength, pairs: [] };
+    cur.pairs.push({ a: link.a, b: link.b, sources });
     lines.set(lineId, cur);
   }
+  // Connected components of sharedTx pairs (union-find over wallets, presentation only).
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    const p = parent.get(x) ?? x;
+    if (p === x) return x;
+    const r = find(p);
+    parent.set(x, r);
+    return r;
+  };
+  for (const { link } of shared) parent.set(find(link.a), find(link.b));
+  const components = new Map<string, typeof shared>();
+  for (const e of shared) {
+    const root = find(e.link.a);
+    components.set(root, [...(components.get(root) ?? []), e]);
+  }
+  for (const members of components.values()) {
+    const wallets = [...new Set(members.flatMap((m) => [m.link.a, m.link.b]))].sort();
+    const lineId = members.length === 1 ? members[0].id : `sharedTx|component|${wallets.join("|")}`;
+    lines.set(lineId, { type: "sharedTx", key: null, strength: "strong", pairs: members.map((m) => ({ a: m.link.a, b: m.link.b, sources: m.sources })) });
+  }
+
+  const ENGINE: Record<ReasonSource, string> = { dex: "DEX", onchain: "on-chain", wallet_intel: "Wallet Intelligence" };
   const out: Reason[] = [];
   for (const [lineId, l] of lines) {
-    const wallets = [...new Set(l.pairs.flat())].map(short);
-    const who = l.pairs.length === 1 ? `${short(l.pairs[0][0])} ↔ ${short(l.pairs[0][1])}` : `${l.pairs.length} paires (${wallets.join(", ")})`;
+    const sources = new Set(l.pairs.flatMap((p) => [...p.sources]));
+    const wallets = [...new Set(l.pairs.flatMap((p) => [p.a, p.b]))];
+    const who =
+      l.pairs.length === 1
+        ? `${short(l.pairs[0].a)} ↔ ${short(l.pairs[0].b)}`
+        : l.type === "sharedTx"
+          ? `${wallets.length} wallets reliés, ${l.pairs.length} paires (${wallets.map(short).join(", ")})`
+          : `${l.pairs.length} paires (${wallets.map(short).join(", ")})`;
     const via = l.key && KEYED.includes(l.type) ? ` [${l.type === "sameTx" ? "transaction" : "financeur"} ${short(l.key)}]` : "";
+    // Which engine saw which pairs: a pair seen by both engines counts for each, and is reported as shared.
+    const provenance =
+      sources.size > 1
+        ? ` — provenance : ${[...sources].sort().map((src) => `${ENGINE[src]} ${l.pairs.filter((p) => p.sources.has(src)).length} paire(s)`).join(" · ")}${(() => {
+            const both = l.pairs.filter((p) => p.sources.size > 1).length;
+            return both ? ` (dont ${both} vue(s) par les deux moteurs)` : " (paires différentes)";
+          })()}`
+        : "";
     const kind: ReasonKind = l.strength === "strong" || l.strength === "medium" ? "negative" : l.strength === "weak" ? "informational" : "uncertainty";
     const tag = l.strength === "strong" ? "Relation forte" : l.strength === "medium" ? "Relation moyenne" : "Relation";
     out.push({
       kind,
       fact: `relation:${lineId}`,
-      text: `${tag} (${l.type}) : ${who} — ${LINK_TEXT[l.type]}${via}`,
+      text: `${tag} (${l.type}) : ${who} — ${LINK_TEXT[l.type]}${via}${provenance}`,
       severity: l.strength === "strong" ? "high" : l.strength === "medium" ? "medium" : null,
-      sources: [...l.sources].sort(),
+      sources: [...sources].sort(),
     });
   }
   return out;
@@ -144,12 +188,21 @@ export function assessToken(input: AssessmentInput, oc: OnchainConfig = ONCHAIN_
   const baseDecision: FinalDecision = baseDexLabel ? BASE[baseDexLabel] : "NO SIGNAL";
   all.push(reason("informational", "dex:scores", `DEX : Opportunity ${score.opportunity}/100, Risk ${score.risk}/100, Quality ${score.quality}/100, Confidence ${score.confidence.level} — ${score.labelReason}`, "dex"));
   for (const t of score.signals.positive) all.push(reason("positive", `dex:+:${t}`, t, "dex"));
-  // Missing DEX fields are an absence of data: uncertainty, never a negative reason.
-  const missingTexts = new Set([
-    ...(score.missingFields.length ? [`Données absentes : ${score.missingFields.join(", ")}`] : []),
-    ...score.riskFactors.filter((f) => f.key === "missingData").map((f) => `${f.label} : ${f.input} (+${f.points} risk)`),
-  ]);
-  for (const t of score.signals.negative) all.push(reason(missingTexts.has(t) ? "uncertainty" : "negative", `dex:-:${t}`, t, "dex"));
+  // Missing DEX fields are an absence of data: uncertainty, never a negative reason. Step 2 reports the
+  // same missing fields twice (the missingData risk factor and "Données absentes"): one canonical reason
+  // for the fields both name; fields only one of them names stay a separate reason.
+  const missingFactor = score.riskFactors.find((f) => f.key === "missingData") ?? null;
+  const absentText = score.missingFields.length ? `Données absentes : ${score.missingFields.join(", ")}` : null;
+  const factorText = missingFactor ? `${missingFactor.label} : ${missingFactor.input} (+${missingFactor.points} risk)` : null;
+  for (const t of score.signals.negative) if (t !== absentText && t !== factorText) all.push(reason("negative", `dex:-:${t}`, t, "dex"));
+  const factorFields = missingFactor ? missingFactor.input.split(", ") : [];
+  const absentOnly = score.missingFields.filter((f) => !factorFields.includes(f));
+  if (missingFactor && score.signals.negative.includes(factorText!)) {
+    all.push(reason("uncertainty", `dex:missing:${factorFields.join(",")}`, `Données DEX absentes : ${factorFields.join(", ")} (+${missingFactor.points} DEX Risk, données manquantes)`, "dex"));
+  }
+  if (absentText && score.signals.negative.includes(absentText) && absentOnly.length) {
+    all.push(reason("uncertainty", `dex:missing:${absentOnly.join(",")}`, `Données DEX absentes : ${absentOnly.join(", ")}`, "dex"));
+  }
 
   // ─── On-chain (Step 3): confirmed facts only ─────────────────────────
   if (!analysis) {
@@ -191,6 +244,9 @@ export function assessToken(input: AssessmentInput, oc: OnchainConfig = ONCHAIN_
     all.push(reason("uncertainty", "wallets:none", "Wallet Intelligence non lancée : aucune confirmation par les wallets.", "wallet_intel"));
   } else {
     const tracked = intel.tracked;
+    if (!tracked.length) {
+      all.push(reason("uncertainty", "wallets:empty", "Wallet Intelligence exécutée, mais aucun wallet analysé (aucun acheteur ni wallet structurel retenu) : aucune confirmation, pas un signal négatif.", "wallet_intel"));
+    }
     walletConfidence = { HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
     for (const t of tracked) walletConfidence[t.profile.dataConfidence]++;
     const creator = analysis?.creator?.address ?? null;
@@ -269,7 +325,13 @@ export function assessToken(input: AssessmentInput, oc: OnchainConfig = ONCHAIN_
     why.push(`FINAL: AVOID`, ...blockers.map((b) => `WHY CHANGED: hard blocker confirmé — ${b.text}`));
   } else if (cautions.length && baseDecision !== "NO SIGNAL") {
     decision = "CAUTION";
-    why.push(`FINAL: CAUTION`, ...(baseDecision === "CAUTION" ? [`WHY: DEX HIGH RISK (${score.labelReason})`] : []), ...cautions.map((c) => `WHY CHANGED: caution structurelle confirmée — ${c.text}`));
+    // "WHY CHANGED" only when the decision actually changed (DEX HIGH RISK is already CAUTION).
+    const changed = baseDecision !== "CAUTION";
+    why.push(
+      `FINAL: CAUTION`,
+      ...(changed ? [] : [`WHY: DEX HIGH RISK (${score.labelReason})`]),
+      ...cautions.map((c) => (changed ? `WHY CHANGED: caution structurelle confirmée — ${c.text}` : `STRUCTURAL CAUTION: confirmée aussi — ${c.text}`)),
+    );
   } else {
     why.push(`FINAL: ${decision}`);
     if (baseDecision === "CAUTION") why.push(`WHY: DEX HIGH RISK (${score.labelReason})`);

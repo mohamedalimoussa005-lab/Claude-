@@ -158,7 +158,8 @@ test("F: DEX WATCH + several strong sharedTx, no caution gate → WATCH with rel
   const a = assessToken({ score: score("WATCH"), onchain: onchain(d) });
   assert.equal(a.decision, "WATCH");
   const rel = a.negatives.filter((r) => r.fact.startsWith("relation:sharedTx"));
-  assert.equal(rel.length, 6, "4 wallets → 6 pairs, one reason each");
+  assert.equal(rel.length, 1, "4 wallets / 6 pairs in one connected group → one reason (presentation only)");
+  assert.ok(rel[0].text.includes("4 wallets reliés, 6 paires"));
   assert.ok(rel.every((r) => r.severity === "high"));
   assert.ok(!a.negatives.some((r) => r.fact === "onchain:relatedGroup"), "group red flag replaced by canonical relations");
 });
@@ -313,8 +314,8 @@ test("UNKNOWN never negative: every on-chain section unavailable → high raw Ri
   // Missing DEX fields are uncertainty too.
   const s = score("WATCH", { missingFields: ["liquidity.usd"], signals: { positive: [], negative: ["Données absentes : liquidity.usd"], anomalies: [] } as any });
   const a = assessToken({ score: s });
-  assert.ok(a.uncertainties.some((r) => r.text === "Données absentes : liquidity.usd"));
-  assert.ok(!a.negatives.some((r) => r.text === "Données absentes : liquidity.usd"));
+  assert.ok(a.uncertainties.some((r) => r.text === "Données DEX absentes : liquidity.usd"));
+  assert.ok(!a.negatives.some((r) => r.text.includes("liquidity.usd")));
 });
 
 test("no on-chain and no wallet analysis → uncertainties, base decision kept", () => {
@@ -389,4 +390,136 @@ test("UI and script expose the final assessment", () => {
   assert.ok(panel.includes("FINAL ASSESSMENT") && panel.includes("assessToken("));
   const script = readFileSync(new URL("../scripts/wallets-live.ts", import.meta.url), "utf8");
   assert.ok(script.includes("formatAssessment(assessToken("));
+});
+
+// ─── P2 presentation fixes (benchmark 62aee37): WHY only, never the decision ─
+
+const sells = (pct: number) => ({ status: "ok" as const, value: { solBalance: 0.5, tokenPct: 0, recentSignatures: 12, analyzedTransactions: 11, events: [{ signature: "s", time: 1, kind: "sell" as const, tokenDeltaPct: -pct, recipients: [] }] } });
+
+test("P2-A: base CAUTION (DEX HIGH RISK) + structural caution → CAUTION, no WHY CHANGED", () => {
+  const a = assessToken({ score: score("HIGH RISK"), onchain: onchain(data({ creatorActivity: sells(13.49) })) });
+  assert.equal(a.decision, "CAUTION");
+  assert.equal(a.baseDecision, "CAUTION");
+  assert.ok(!a.why.some((l) => l.includes("WHY CHANGED")));
+  assert.ok(!formatAssessment(a).includes("WHY CHANGED"));
+  assert.ok(a.why.some((l) => l.startsWith("STRUCTURAL CAUTION:") && l.includes("a vendu")));
+});
+
+test("P2-B: base MOMENTUM + structural caution → CAUTION with WHY CHANGED", () => {
+  const a = assessToken({ score: score("MOMENTUM"), onchain: onchain(data({ mint: { mintAuthority: key(9) } })) });
+  assert.equal(a.decision, "CAUTION");
+  assert.ok(a.why.some((l) => l.startsWith("WHY CHANGED: caution structurelle confirmée")));
+  assert.ok(!a.why.some((l) => l.startsWith("STRUCTURAL CAUTION:")));
+});
+
+test("P2-C: Wallet Intelligence run with 0 tracked wallets → uncertainty, decision unchanged", () => {
+  const empty = intel([]);
+  assert.equal(empty.tracked.length, 0);
+  for (const label of ["MOMENTUM", "WATCH", "HIGH RISK", null] as const) {
+    const a = assessToken({ score: score(label), onchain: onchain(), wallets: empty });
+    const without = assessToken({ score: score(label), onchain: onchain() });
+    assert.equal(a.decision, without.decision);
+    assert.ok(has(a, "uncertainties", "wallets:empty"));
+    assert.ok(!has(a, "uncertainties", "wallets:none"));
+    assert.ok(!a.negatives.some((r) => r.sources.includes("wallet_intel")));
+  }
+});
+
+test("P2-D: Wallet Intelligence not run → distinct state, no negative", () => {
+  const a = assessToken({ score: score("MOMENTUM"), onchain: onchain() });
+  assert.ok(has(a, "uncertainties", "wallets:none"));
+  assert.ok(!has(a, "uncertainties", "wallets:empty"));
+  assert.ok(!a.negatives.some((r) => r.sources.includes("wallet_intel")));
+});
+
+const missingScore = (factorFields: string[], missingFields: string[]) => {
+  const factor = factorFields.length ? [{ key: "missingData", label: "Données importantes manquantes", input: factorFields.join(", "), points: factorFields.length * 3 }] : [];
+  const negative = [...factor.map((f) => `${f.label} : ${f.input} (+${f.points} risk)`), ...(missingFields.length ? [`Données absentes : ${missingFields.join(", ")}`] : []), "Liquidité faible : $2.81K (+23.1 risk)"];
+  return score("HIGH RISK", { riskFactors: factor as any, missingFields, signals: { positive: [], negative, anomalies: [] } as any });
+};
+
+test("P2-E: the same missing DEX fields reported twice by Step 2 → one uncertainty", () => {
+  const f = ["priceChange.m5", "priceChange.h1", "priceChange.h6"];
+  const a = assessToken({ score: missingScore(f, f) });
+  const miss = a.uncertainties.filter((r) => r.fact.startsWith("dex:missing:"));
+  assert.equal(miss.length, 1);
+  assert.equal(miss[0].text, "Données DEX absentes : priceChange.m5, priceChange.h1, priceChange.h6 (+9 DEX Risk, données manquantes)");
+  assert.ok(!a.uncertainties.some((r) => r.text.startsWith("Données absentes") || r.text.startsWith("Données importantes manquantes")));
+  assert.ok(a.negatives.some((r) => r.text.startsWith("Liquidité faible")), "other DEX negatives untouched");
+});
+
+test("P2-F: genuinely different missing fields stay separate", () => {
+  const a = assessToken({ score: missingScore(["priceChange.m5"], ["liquidity.usd", "priceChange.m5"]) });
+  const miss = a.uncertainties.filter((r) => r.fact.startsWith("dex:missing:")).map((r) => r.text);
+  assert.deepEqual(miss, ["Données DEX absentes : priceChange.m5 (+3 DEX Risk, données manquantes)", "Données DEX absentes : liquidity.usd"]);
+  assert.ok(!a.negatives.some((r) => /priceChange|liquidity\.usd/.test(r.text)));
+});
+
+test("P2-G: sameBusyFunder seen by Step 3 and Step 4 → informational, provenance per engine", () => {
+  const F = key(240);
+  const d = data({ mapWallets: (w, i) => (i < 2 ? { ...w, funder: F, fundingSignature: `f${i}`, funderSignatureCount: 5000 } : w) });
+  const ws = intel([wf(W(0), { funder: F, funderSignatureCount: 5000 }), wf(W(1), { funder: F, funderSignatureCount: 5000 }), wf(W(2), { funder: F, funderSignatureCount: 5000 })]);
+  assert.ok(ws.related.links.some((l) => l.type === "sameBusyFunder"));
+  const a = assessToken({ score: score("MOMENTUM"), onchain: onchain(d), wallets: ws });
+  const busy = a.informational.filter((r) => r.fact.startsWith("relation:sameBusyFunder"));
+  assert.equal(busy.length, 1);
+  assert.ok(busy[0].text.includes("provenance : on-chain 1 paire(s) · Wallet Intelligence 3 paire(s) (paires différentes)"), busy[0].text);
+  assert.ok(!a.negatives.some((r) => r.fact.startsWith("relation:sameBusyFunder")));
+  assert.equal(a.decision, "MOMENTUM");
+});
+
+test("P2-H: 4 wallets / 6 sharedTx pairs in one connected group → one cluster reason", () => {
+  const ws = intel([0, 1, 2, 3].map((i) => wf(W(i), { signatures: ["bundle"] })));
+  assert.equal(ws.related.links.filter((l) => l.type === "sharedTx").length, 6, "relations themselves unchanged");
+  const a = assessToken({ score: score("WATCH"), onchain: onchain(), wallets: ws });
+  const rel = a.negatives.filter((r) => r.fact.startsWith("relation:sharedTx"));
+  assert.equal(rel.length, 1);
+  assert.ok(rel[0].text.startsWith("Relation forte (sharedTx) : 4 wallets reliés, 6 paires"));
+  assert.equal(a.decision, "WATCH");
+});
+
+test("P2-I: two independent sharedTx groups → two reasons", () => {
+  const ws = intel([wf(W(0), { signatures: ["b1"] }), wf(W(1), { signatures: ["b1"] }), wf(W(2), { signatures: ["b2"] }), wf(W(3), { signatures: ["b2"] })]);
+  const a = assessToken({ score: score("WATCH"), onchain: onchain(), wallets: ws });
+  assert.equal(a.negatives.filter((r) => r.fact.startsWith("relation:sharedTx")).length, 2);
+});
+
+test("P2-J: cross-engine sharedTx with the same evidence → still one reason, both sources", () => {
+  const d = data({ mapWallets: (w, i) => (i < 2 ? { ...w, signatures: [...w.signatures, "bundle"] } : w) });
+  const ws = intel([wf(H(0), { signatures: ["bundle"] }), wf(H(1), { signatures: ["bundle"] })]);
+  const a = assessToken({ score: score("MOMENTUM"), onchain: onchain(d), wallets: ws });
+  const rel = a.negatives.filter((r) => r.fact.startsWith("relation:sharedTx"));
+  assert.equal(rel.length, 1);
+  assert.deepEqual(rel[0].sources, ["onchain", "wallet_intel"]);
+  assert.ok(rel[0].text.includes("(dont 1 vue(s) par les deux moteurs)"));
+});
+
+test("P2-K: different evidence never merged into one pair (disjoint pairs → separate reasons)", () => {
+  const d = data({ mapWallets: (w, i) => (i < 2 ? { ...w, signatures: [...w.signatures, "bundle"] } : w) });
+  const ws = intel([wf(W(0), { signatures: ["other"] }), wf(W(1), { signatures: ["other"] })]);
+  const a = assessToken({ score: score("MOMENTUM"), onchain: onchain(d), wallets: ws });
+  const rel = a.negatives.filter((r) => r.fact.startsWith("relation:sharedTx"));
+  assert.deepEqual(rel.map((r) => r.sources), [["onchain"], ["wallet_intel"]]);
+  assert.ok(rel.every((r) => !r.text.includes("provenance")));
+});
+
+test("P2-L: benchmark-shaped fixtures keep their decisions (fixtures, not live)", () => {
+  const bundle = (n: number) => (w: WalletHistory, i: number) => (i < n ? { ...w, signatures: [...w.signatures, "bundle"] } : w);
+  const busy = (w: WalletHistory, i: number) => (i < 3 ? { ...w, funder: key(240), fundingSignature: `f${i}`, funderSignatureCount: 5000 } : w);
+  const cases: [string, FinalAssessment, string][] = [
+    ["ALON", assessToken({ score: score("MOMENTUM"), onchain: onchain(data({ mapWallets: bundle(2) })), wallets: intel([wf(H(0), { signatures: ["bundle"] }), wf(H(1), { signatures: ["bundle"] }), incompleteWallet(W(0))]) }), "MOMENTUM"],
+    ["WHIPCAT", assessToken({ score: score("WATCH"), onchain: onchain(data({ mapWallets: busy })), wallets: intel([0, 1, 2, 3].map((i) => wf(W(i), { signatures: ["bundle"], funder: key(240), funderSignatureCount: 5000 }))) }), "WATCH"],
+    ["PIGEON", assessToken({ score: score("MOMENTUM"), onchain: onchain(data({ creator: { status: "not_found", reason: "x" }, creatorActivity: { status: "not_found", reason: "x" }, mint: { extensions: [{ name: "transferFeeConfig", state: { newerTransferFee: { transferFeeBasisPoints: 300 } } }] } })), wallets: intel([incompleteWallet(W(0)), incompleteWallet(W(1))]) }), "MOMENTUM"],
+    ["MICRO", assessToken({ score: score("MOMENTUM"), onchain: onchain(data({ mapWallets: bundle(2) })), wallets: intel([wf(H(0), { signatures: ["bundle"] }), incompleteWallet(H(1), { signatures: ["bundle"] })]) }), "MOMENTUM"],
+    ["PURRSWORD", assessToken({ score: score("WATCH"), onchain: onchain(data({ creatorActivity: sells(0.66), mapWallets: busy })), wallets: intel([wf(W(0)), wf(W(1))]) }), "CAUTION"],
+    ["DON", assessToken({ score: score(null), onchain: onchain(data({ mapWallets: bundle(3) })), wallets: intel([incompleteWallet(W(0)), incompleteWallet(H(0))]) }), "NO SIGNAL"],
+    ["BUBBLE", assessToken({ score: missingScore(["priceChange.m5"], ["priceChange.m5"]), onchain: onchain(data({ creatorActivity: sells(13.49) })), wallets: intel([]) }), "CAUTION"],
+  ];
+  for (const [name, a, expected] of cases) {
+    assert.equal(a.decision, expected, name);
+    const t = formatAssessment(a);
+    assert.ok(!/NaN|undefined|null|\[object Object\]/.test(t), name);
+  }
+  assert.ok(!cases[6][1].why.some((l) => l.includes("WHY CHANGED")), "BUBBLE: base already CAUTION");
+  assert.ok(cases[4][1].why.some((l) => l.includes("WHY CHANGED")), "PURRSWORD: WATCH → CAUTION");
 });

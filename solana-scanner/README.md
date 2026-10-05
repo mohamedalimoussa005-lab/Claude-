@@ -461,5 +461,11 @@ negative plus faible ; `sameBusyFunder` / `timing` → INFORMATIONAL. Wallets de
 **Déduplication de présentation** : une relation Step 3 et une relation Step 4 ne font qu'une raison seulement
 si elles ont la même identité (type + paire de wallets + clé du lien) ; un `fundedByCreator` et le lien
 `fundedBy` identique (wallet ↔ deployment wallet) aussi. Sans identité commune fiable, rien n'est fusionné.
+Présentation (sans effet sur la décision ni sur les relations) : les paires `sharedTx` d'un même groupe connecté
+forment une seule raison (« 4 wallets reliés, 6 paires ») ; une ligne qui regroupe des paires vues par les deux
+moteurs (même financeur) indique combien de paires chacun a vues ; les champs DEX manquants que Step 2 rapporte deux
+fois ne donnent qu'une incertitude ; « WHY CHANGED » n'apparaît que si la décision diffère de la base (sinon
+« STRUCTURAL CAUTION ») ; Wallet Intelligence lancée sans aucun wallet suivi est une incertitude distincte de « non
+lancée ».
 Aucun score Step 2 / 3 / 4, aucune pénalité ni aucun cluster ne change. Affichage : panneau FINAL ASSESSMENT
 dans le détail d'un token ; `scripts/wallets-live.ts` imprime `formatAssessment`.
