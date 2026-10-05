@@ -540,3 +540,28 @@ npm run outcomes:backup                   # copie dans data/outcomes/backups/obs
 - **Chaque capture crée une nouvelle observation par token** (T0 = heure du scan) : un token présent dans
   plusieurs scans donne plusieurs séries qui se chevauchent, à traiter à l'analyse.
 - Le dossier `data/outcomes/` (backups compris) est ignoré par git : aucune observation live n'est commitée.
+
+### Schéma v2 : outcomes ancrés sur la disponibilité de la décision
+
+Pour un candidat, Step 3 puis Step 4 peuvent finir plusieurs minutes après le scan DEX (T0). Un snapshot v2 date
+donc chaque étape au lieu de tout attribuer à T0 :
+
+- `timeline` : `captureStartedAt`, `marketObservedAt` (T0 = scan DEX, = `capturedAt`), `step2CompletedAt`,
+  `step3StartedAt` / `step3CompletedAt`, `step4StartedAt` / `step4CompletedAt` (`null` si le moteur n'a pas
+  tourné), `assessmentCompletedAt`, **`decisionAvailableAt`** (= production du FinalAssessment enregistré :
+  jamais avant une donnée qu'il utilise, vérifié à la construction), `snapshotFinalizedAt`.
+- `decisionMarket` : la paire exacte relue juste après la décision (prix, liquidité, market cap, FDV, statut
+  OK / UNAVAILABLE / PROVIDER_ERROR). Le prix T0 n'est jamais réutilisé à sa place.
+- **Checkpoints** 5m … 24h comptés depuis `decisionAvailableAt`. À chaque checkpoint :
+  `decisionReturnPct` = (prix / prix à la décision − 1) × 100 — métrique principale, la seule équitable pour une
+  décision qui a utilisé Step 3 / 4 — et `marketReturnPct` = (prix / prix T0 − 1) × 100, au même instant
+  (secondaire, jamais confondu). Une seule série de checkpoints : le mouvement T0 → décision est déjà mesuré
+  par `decisionMarket`, une seconde série ancrée sur T0 doublerait les relevés pour peu d'information.
+- Capture : les tokens Step 2 seul sont évalués et enregistrés d'abord (une lecture DexScreener par lot de 30
+  paires), puis chaque candidat est finalisé et enregistré dès que son Step 3 / Step 4 et son FinalAssessment
+  sont prêts (une lecture de sa paire). Coût : ~⌈tokens / 30⌉ + nombre de candidats appels DexScreener.
+- `outcomes:status` / `outcomes:report` affichent la latence de décision (médiane, p95, max) par profondeur
+  d'analyse (Step 2 seul / Step 3 / Step 4) et la durée de la dernière capture : métriques de qualité du dataset.
+- **Données v1** : un dataset v1 (sans timeline) est refusé par le chargeur et n'est jamais migré avec des heures
+  inventées. `npm run outcomes:archive-legacy` le déplace tel quel vers
+  `data/outcomes/backups/observations-legacy-v0-<date>.json` ; la capture suivante démarre un dataset v2.

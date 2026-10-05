@@ -13,6 +13,7 @@ import { addObservations, backupStore, datasetBytes, fileOf, loadStore, replaceO
 import { applyFetch, buildObservation, CHECKPOINTS } from "../src/outcomes/tracker.ts";
 import type { CheckpointKey, Observation } from "../src/outcomes/tracker.ts";
 import { scorePair } from "../src/scoring/score.ts";
+import { okDecisionMarket, step2Timeline } from "./helpers/outcomes.ts";
 
 /** Offline: collection infrastructure (lock, backup, status, restart). */
 
@@ -26,7 +27,7 @@ const pair = (o: Partial<NormalizedPair> = {}): NormalizedPair => ({
 });
 const observe = (p: NormalizedPair = pair(), t0 = T0): Observation => {
   const score = scorePair(p, t0);
-  return buildObservation({ pair: p, score, assessment: assessToken({ score }), capturedAt: t0, candidate: false, onchain: null, step3Status: "NOT_RUN", wallets: null, step4Status: "NOT_RUN" });
+  return buildObservation({ pair: p, score, assessment: assessToken({ score }), timeline: step2Timeline(t0), decisionMarket: okDecisionMarket(p, t0), candidate: false, onchain: null, step3Status: "NOT_RUN", wallets: null, step4Status: "NOT_RUN" });
 };
 const at = (key: CheckpointKey, extraMin = 0, t0 = T0) => t0 + CHECKPOINTS.find((c) => c.key === key)!.ms + extraMin * MIN;
 const ok = (price: number, pairAddress = "PAIR_A") => ({ status: "OK" as const, pair: pair({ priceUsd: price, pairAddress }) });
@@ -125,7 +126,7 @@ test("F / G: status on a partial dataset counts OK, MISSED and provider errors",
   assert.ok(t.includes("MISSED: 3"));
   assert.ok(t.includes("PROVIDER ERRORS: 1"));
   assert.ok(t.includes("UNAVAILABLE: 1"));
-  assert.ok(t.includes(`T0 ${new Date(T0).toISOString()}`), "oldest incomplete = the first observation");
+  assert.ok(t.includes(`décision ${new Date(T0).toISOString()}`), "oldest incomplete = the first observation");
   assert.ok(t.includes("DATASET SIZE: 2.0 Ko"));
 });
 
@@ -149,7 +150,7 @@ test("H / I: restart neither duplicates observations nor rewrites an OK checkpoi
     const s = loadStore(dir);
     assert.equal(s.observations.length, 1);
     assert.deepEqual(s.observations[0].outcomes["5m"], okBefore, "OK checkpoint unchanged");
-    assert.equal(s.observations[0].outcomes["15m"]!.returnPct, 100, "resumed with the next due checkpoint");
+    assert.equal(s.observations[0].outcomes["15m"]!.decisionReturnPct, 100, "resumed with the next due checkpoint");
     assert.equal(JSON.stringify(s.observations[0].snapshot), snapBefore);
     assert.ok(datasetBytes(dir)! > 0);
   } finally {

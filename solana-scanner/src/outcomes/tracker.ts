@@ -1,9 +1,12 @@
 /**
  * Outcome Tracker V1 — an observation layer over the scanner, never an input to it.
  *
- * An observation = an IMMUTABLE snapshot of what the scanner knew at T0 (market data,
- * Step 2 / 3 / 4 results, FinalAssessment) + outcomes measured later on the SAME pair
- * at fixed checkpoints. Outcomes are only ever added next to the snapshot: nothing in
+ * An observation = an IMMUTABLE snapshot of what the scanner knew (market data at T0,
+ * Step 2 / 3 / 4 results, FinalAssessment, the timeline of that analysis and the market
+ * when the decision became available) + outcomes measured later on the SAME pair at fixed
+ * checkpoints after `decisionAvailableAt` (schema v2). Step 3 / 4 can finish minutes after
+ * the DEX scan: outcomes are anchored on the moment the recorded decision existed, never on
+ * the scan time, so no information acquired after T0 is credited to T0. Outcomes are only ever added next to the snapshot: nothing in
  * the snapshot is recomputed with later data, and nothing here feeds back into the
  * scanner. Pure: no I/O, the caller supplies time and fetch results.
  */
@@ -15,7 +18,9 @@ import type { OnchainResult } from "../onchain/service.ts";
 import type { PairScore } from "../scoring/score.ts";
 import type { WalletIntel } from "../wallets/intel.ts";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
+/** v1 datasets (capturedAt-anchored, no timeline) are legacy: never read as v2, never migrated with invented times. */
+export const LEGACY_SCHEMA_VERSIONS = [1];
 export const CHECKPOINTS = [
   { key: "5m", ms: 5 * 60_000 },
   { key: "15m", ms: 15 * 60_000 },
@@ -36,11 +41,43 @@ export type EngineStatus = "NOT_RUN" | "COMPLETE" | "PARTIAL" | "FAILED";
  */
 export type CheckpointStatus = "OK" | "UNAVAILABLE" | "PROVIDER_ERROR" | "MISSED";
 
+/** When each part of the analysis happened (null = that engine did not run; never back-filled). */
+export interface Timeline {
+  /** The capture command started (before the DEX scan). */
+  captureStartedAt: number;
+  /** T0: the DEX scan whose market data the scanner used. */
+  marketObservedAt: number;
+  step2CompletedAt: number;
+  step3StartedAt: number | null;
+  step3CompletedAt: number | null;
+  step4StartedAt: number | null;
+  step4CompletedAt: number | null;
+  /** The FinalAssessment recorded in this snapshot was produced. */
+  assessmentCompletedAt: number;
+  /** First instant the recorded decision existed (= assessmentCompletedAt): base of every outcome checkpoint. */
+  decisionAvailableAt: number;
+  snapshotFinalizedAt: number;
+}
+
+/** The exact T0 pair fetched right after the decision became available: base of decisionReturnPct. */
+export interface DecisionMarket {
+  status: "OK" | "UNAVAILABLE" | "PROVIDER_ERROR";
+  observedAt: number;
+  provider: "dexscreener";
+  priceUsd: number | null;
+  liquidityUsd: number | null;
+  marketCap: number | null;
+  fdv: number | null;
+  note: string | null;
+}
+
 export interface Snapshot {
   schemaVersion: number;
   observationId: string;
-  /** T0: time of the DEX scan the scanner decided on. */
+  /** = timeline.marketObservedAt (T0 of the market data); kept for the id. Not the decision time. */
   capturedAt: number;
+  timeline: Timeline;
+  decisionMarket: DecisionMarket;
   source: "dexscreener";
   scannerCommit: string | null;
   identity: { mint: string; pairAddress: string; chainId: string; dexId: string | null; symbol: string | null; name: string | null; quoteSymbol: string | null; url: string | null };
@@ -119,8 +156,10 @@ export interface Checkpoint {
   fdv: number | null;
   volumeH1: number | null;
   volumeH24: number | null;
-  /** (price / price T0 − 1) × 100 when both prices are known and positive; null otherwise. */
-  returnPct: number | null;
+  /** Primary: (price / decisionMarket price − 1) × 100; null when either price is unknown. */
+  decisionReturnPct: number | null;
+  /** Secondary: (price / T0 scan price − 1) × 100 at the same checkpoint; null when either price is unknown. */
+  marketReturnPct: number | null;
   note: string | null;
 }
 
@@ -153,7 +192,8 @@ export interface CaptureInput {
   pair: NormalizedPair;
   score: PairScore;
   assessment: FinalAssessment;
-  capturedAt: number;
+  timeline: Timeline;
+  decisionMarket: DecisionMarket;
   candidate: boolean;
   onchain: OnchainResult | null;
   step3Status: EngineStatus;
@@ -162,16 +202,48 @@ export interface CaptureInput {
   scannerCommit?: string | null;
 }
 
-/** Builds the T0 snapshot from results the scanner already computed (no scoring here). */
+/** Market state of the exact pair when the decision became available (never the T0 price reused). */
+export function decisionMarketFrom(pairAddress: string, fetch: FetchResult, observedAt: number): DecisionMarket {
+  if (fetch.status === "OK") {
+    if (fetch.pair.pairAddress !== pairAddress) throw new Error("decision market fetch for another pair: no silent substitution");
+    const p = fetch.pair;
+    const price = num(p.priceUsd);
+    return { status: "OK", observedAt, provider: "dexscreener", priceUsd: price, liquidityUsd: num(p.liquidityUsd), marketCap: num(p.marketCap), fdv: num(p.fdv), note: price === null ? "prix absent dans la réponse" : null };
+  }
+  return { status: fetch.status, observedAt, provider: "dexscreener", priceUsd: null, liquidityUsd: null, marketCap: null, fdv: null, note: fetch.status === "PROVIDER_ERROR" ? `erreur fournisseur : ${fetch.error.slice(0, 160)}` : "paire absente de la réponse du fournisseur" };
+}
+
+/** Chronology invariants: no recorded decision may predate the data it used. */
+export function checkTimeline(t: Timeline, step3Ran: boolean, step4Ran: boolean, dm: DecisionMarket): void {
+  const fail = (m: string) => {
+    throw new Error(`timeline invalide : ${m}`);
+  };
+  if (t.marketObservedAt < t.captureStartedAt) fail("marketObservedAt < captureStartedAt");
+  if (t.step2CompletedAt < t.marketObservedAt) fail("step2CompletedAt < marketObservedAt");
+  for (const [ran, a, b, n] of [[step3Ran, t.step3StartedAt, t.step3CompletedAt, "step3"], [step4Ran, t.step4StartedAt, t.step4CompletedAt, "step4"]] as const) {
+    if (!ran && (a !== null || b !== null)) fail(`${n} non exécuté mais horodaté`);
+    if (ran && (a === null || b === null || a < t.step2CompletedAt || b < a)) fail(`${n} mal horodaté`);
+  }
+  const used = [t.step2CompletedAt, t.step3CompletedAt, t.step4CompletedAt].filter((x): x is number => x !== null);
+  if (t.assessmentCompletedAt < Math.max(...used)) fail("assessmentCompletedAt antérieur à une donnée utilisée");
+  if (t.decisionAvailableAt !== t.assessmentCompletedAt) fail("decisionAvailableAt ≠ assessmentCompletedAt");
+  if (dm.observedAt < t.decisionAvailableAt) fail("decisionMarket observé avant la décision");
+  if (t.snapshotFinalizedAt < dm.observedAt) fail("snapshotFinalizedAt antérieur au decisionMarket");
+}
+
+/** Builds the snapshot from results the scanner already computed (no scoring here). */
 export function buildObservation(i: CaptureInput): Observation {
   const { pair: p, score: s, assessment: fa } = i;
+  checkTimeline(i.timeline, i.step3Status !== "NOT_RUN", i.step4Status !== "NOT_RUN", i.decisionMarket);
   const a = i.onchain?.analysis ?? null;
   const d = i.onchain?.data ?? null;
   const w = i.wallets;
   const snapshot: Snapshot = {
     schemaVersion: SCHEMA_VERSION,
-    observationId: observationIdOf(p.tokenAddress, p.pairAddress, i.capturedAt),
-    capturedAt: i.capturedAt,
+    observationId: observationIdOf(p.tokenAddress, p.pairAddress, i.timeline.marketObservedAt),
+    capturedAt: i.timeline.marketObservedAt,
+    timeline: { ...i.timeline },
+    decisionMarket: { ...i.decisionMarket },
     source: "dexscreener",
     scannerCommit: i.scannerCommit ?? null,
     identity: { mint: p.tokenAddress, pairAddress: p.pairAddress, chainId: p.chainId, dexId: p.dexId, symbol: p.tokenSymbol, name: p.tokenName, quoteSymbol: p.quoteSymbol, url: p.url },
@@ -220,7 +292,9 @@ export function buildObservation(i: CaptureInput): Observation {
 
 // ─── checkpoints ───────────────────────────────────────────────────────────
 
-export const targetOf = (s: Snapshot, key: CheckpointKey) => s.capturedAt + CHECKPOINTS.find((c) => c.key === key)!.ms;
+/** Checkpoints are anchored on decisionAvailableAt (never on the scan time). */
+export const decisionBase = (s: Snapshot) => s.timeline.decisionAvailableAt;
+export const targetOf = (s: Snapshot, key: CheckpointKey) => decisionBase(s) + CHECKPOINTS.find((c) => c.key === key)!.ms;
 
 /**
  * A checkpoint can be measured from its target time until the next checkpoint's target
@@ -229,7 +303,7 @@ export const targetOf = (s: Snapshot, key: CheckpointKey) => s.capturedAt + CHEC
  */
 export function windowOf(s: Snapshot, key: CheckpointKey): { from: number; until: number | null } {
   const i = CHECKPOINTS.findIndex((c) => c.key === key);
-  return { from: s.capturedAt + CHECKPOINTS[i].ms, until: i + 1 < CHECKPOINTS.length ? s.capturedAt + CHECKPOINTS[i + 1].ms : null };
+  return { from: decisionBase(s) + CHECKPOINTS[i].ms, until: i + 1 < CHECKPOINTS.length ? decisionBase(s) + CHECKPOINTS[i + 1].ms : null };
 }
 
 export type CheckpointState = "NOT_DUE" | "DUE" | "FINAL" | "WINDOW_PASSED";
@@ -276,8 +350,16 @@ export function applyFetch(o: Observation, now: number, fetch: FetchResult | nul
       outcomes[key] = {
         key, targetAt: targetOf(o.snapshot, key), status: "OK", observedAt: now, delayMs: now - targetOf(o.snapshot, key), provider: "dexscreener", attempts,
         priceUsd: price, liquidityUsd: num(p.liquidityUsd), marketCap: num(p.marketCap), fdv: num(p.fdv), volumeH1: num(p.volumeH1), volumeH24: num(p.volumeH24),
-        returnPct: returnPct(o.snapshot.market.priceUsd, price),
-        note: price === null ? "prix absent dans la réponse" : o.snapshot.market.priceUsd === null ? "prix T0 absent : rendement inconnu" : null,
+        decisionReturnPct: o.snapshot.decisionMarket.status === "OK" ? returnPct(o.snapshot.decisionMarket.priceUsd, price) : null,
+        marketReturnPct: returnPct(o.snapshot.market.priceUsd, price),
+        note:
+          price === null
+            ? "prix absent dans la réponse"
+            : o.snapshot.decisionMarket.priceUsd === null
+              ? `prix à la décision inconnu (${o.snapshot.decisionMarket.status}) : rendement décision inconnu`
+              : o.snapshot.market.priceUsd === null
+                ? "prix T0 absent : rendement marché inconnu"
+                : null,
       };
     } else {
       outcomes[key] = empty(o.snapshot, key, fetch.status, now, attempts, fetch.status === "PROVIDER_ERROR" ? `erreur fournisseur : ${fetch.error.slice(0, 160)}` : "paire absente de la réponse du fournisseur");
@@ -288,14 +370,14 @@ export function applyFetch(o: Observation, now: number, fetch: FetchResult | nul
 
 function empty(s: Snapshot, key: CheckpointKey, status: CheckpointStatus, now: number | null, attempts: number, note: string): Checkpoint {
   const targetAt = targetOf(s, key);
-  return { key, targetAt, status, observedAt: now, delayMs: now === null ? null : now - targetAt, provider: "dexscreener", attempts, priceUsd: null, liquidityUsd: null, marketCap: null, fdv: null, volumeH1: null, volumeH24: null, returnPct: null, note };
+  return { key, targetAt, status, observedAt: now, delayMs: now === null ? null : now - targetAt, provider: "dexscreener", attempts, priceUsd: null, liquidityUsd: null, marketCap: null, fdv: null, volumeH1: null, volumeH24: null, decisionReturnPct: null, marketReturnPct: null, note };
 }
 
-/** Path metrics over the checkpoints actually observed (OK with a return): not a true high / low between them. */
+/** Path metrics of decisionReturnPct over the checkpoints actually observed: not a true high / low between them. */
 export function observedPath(o: Observation): { maxObservedReturnPct: number | null; maxObservedAt: number | null; minObservedReturnPct: number | null; minObservedAt: number | null; observedPoints: number } {
-  const pts = Object.values(o.outcomes).filter((c): c is Checkpoint => !!c && c.status === "OK" && c.returnPct !== null);
+  const pts = Object.values(o.outcomes).filter((c): c is Checkpoint => !!c && c.status === "OK" && c.decisionReturnPct !== null);
   if (!pts.length) return { maxObservedReturnPct: null, maxObservedAt: null, minObservedReturnPct: null, minObservedAt: null, observedPoints: 0 };
-  const max = pts.reduce((m, c) => (c.returnPct! > m.returnPct! ? c : m));
-  const min = pts.reduce((m, c) => (c.returnPct! < m.returnPct! ? c : m));
-  return { maxObservedReturnPct: max.returnPct, maxObservedAt: max.observedAt, minObservedReturnPct: min.returnPct, minObservedAt: min.observedAt, observedPoints: pts.length };
+  const max = pts.reduce((m, c) => (c.decisionReturnPct! > m.decisionReturnPct! ? c : m));
+  const min = pts.reduce((m, c) => (c.decisionReturnPct! < m.decisionReturnPct! ? c : m));
+  return { maxObservedReturnPct: max.decisionReturnPct, maxObservedAt: max.observedAt, minObservedReturnPct: min.decisionReturnPct, minObservedAt: min.observedAt, observedPoints: pts.length };
 }

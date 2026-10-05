@@ -24,6 +24,7 @@
     "outcomes:export": "node --experimental-strip-types --no-warnings scripts/outcomes.ts export",
     "outcomes:status": "node --experimental-strip-types --no-warnings scripts/outcomes.ts status",
     "outcomes:backup": "node --experimental-strip-types --no-warnings scripts/outcomes.ts backup",
+    "outcomes:archive-legacy": "node --experimental-strip-types --no-warnings scripts/outcomes.ts archive-legacy",
     "outcomes:collect": "node --experimental-strip-types --no-warnings scripts/outcomes-collect.ts"
   },
   "dependencies": {

@@ -4,10 +4,10 @@
  * OUTCOMES_DIR overrides the directory (tests use a temporary one).
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hashSnapshot, SCHEMA_VERSION } from "./tracker.ts";
+import { hashSnapshot, LEGACY_SCHEMA_VERSIONS, SCHEMA_VERSION } from "./tracker.ts";
 import type { Observation } from "./tracker.ts";
 
 export interface OutcomeStore {
@@ -22,8 +22,39 @@ export function loadStore(dir: string = defaultOutcomesDir()): OutcomeStore {
   const f = fileOf(dir);
   if (!existsSync(f)) return { schemaVersion: SCHEMA_VERSION, observations: [] };
   const s = JSON.parse(readFileSync(f, "utf8")) as OutcomeStore;
+  // A v1 dataset has no timeline: it is never read as v2 (its capturedAt is not a decision time).
+  const versions = new Set([s.schemaVersion, ...s.observations.map((o) => o.snapshot.schemaVersion)]);
+  if ([...versions].some((v) => LEGACY_SCHEMA_VERSIONS.includes(v))) throw new LegacyDatasetError(f, [...versions]);
+  if ([...versions].some((v) => v !== SCHEMA_VERSION)) throw new Error(`dataset schemaVersion ${[...versions].join(", ")} inconnu (attendu ${SCHEMA_VERSION})`);
   for (const o of s.observations) if (hashSnapshot(o.snapshot) !== o.snapshotHash) throw new Error(`snapshot ${o.snapshot.observationId} does not match its capture hash`);
   return s;
+}
+
+export class LegacyDatasetError extends Error {
+  readonly file: string;
+  readonly versions: number[];
+  constructor(file: string, versions: number[]) {
+    super(`dataset ${file} en schemaVersion ${versions.join(", ")} (legacy, sans timeline de décision) : lancer \`npm run outcomes:archive-legacy\` pour l'archiver en legacy-v0 et repartir d'un dataset v${SCHEMA_VERSION}`);
+    this.name = "LegacyDatasetError";
+    this.file = file;
+    this.versions = versions;
+  }
+}
+
+/** Moves a legacy (v1) dataset to backups/observations-legacy-v0-<stamp>.json, untouched; returns its path or null. */
+export function archiveLegacyStore(dir: string = defaultOutcomesDir(), now: Date = new Date()): string | null {
+  const f = fileOf(dir);
+  if (!existsSync(f)) return null;
+  const raw = JSON.parse(readFileSync(f, "utf8")) as { schemaVersion?: number; observations?: { snapshot?: { schemaVersion?: number } }[] };
+  const versions = new Set([raw.schemaVersion, ...(raw.observations ?? []).map((o) => o.snapshot?.schemaVersion)]);
+  if (![...versions].some((v) => v !== undefined && LEGACY_SCHEMA_VERSIONS.includes(v))) return null;
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${now.getUTCFullYear()}${p(now.getUTCMonth() + 1)}${p(now.getUTCDate())}-${p(now.getUTCHours())}${p(now.getUTCMinutes())}${p(now.getUTCSeconds())}`;
+  mkdirSync(join(dir, "backups"), { recursive: true });
+  const dest = join(dir, "backups", `observations-legacy-v0-${stamp}.json`);
+  copyFileSync(f, dest);
+  rmSync(f);
+  return dest;
 }
 
 export function saveStore(store: OutcomeStore, dir: string = defaultOutcomesDir()): void {

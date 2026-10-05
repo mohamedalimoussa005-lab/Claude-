@@ -24,7 +24,25 @@ export function stats(xs: number[]): Stats {
   return { n: v.length, mean: v.reduce((s, x) => s + x, 0) / v.length, median: v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2, min: v[0], max: v[v.length - 1] };
 }
 
-const returnsAt = (obs: Observation[], key: CheckpointKey) => obs.map((o) => o.outcomes[key]).filter((c) => c?.status === "OK" && c.returnPct !== null).map((c) => c!.returnPct!);
+const decisionReturnsAt = (obs: Observation[], key: CheckpointKey) => obs.map((o) => o.outcomes[key]?.status === "OK" ? o.outcomes[key]!.decisionReturnPct : null).filter((x): x is number => x !== null);
+const marketReturnsAt = (obs: Observation[], key: CheckpointKey) => obs.map((o) => o.outcomes[key]?.status === "OK" ? o.outcomes[key]!.marketReturnPct : null).filter((x): x is number => x !== null);
+
+/** Latency between the market observation (T0) and the decision, by depth of analysis (dataset quality, not trading). */
+export const tierOf = (o: Observation) => (o.snapshot.funnel.step4Status !== "NOT_RUN" ? "Step 4" : o.snapshot.funnel.step3Status !== "NOT_RUN" ? "Step 3" : "Step 2 seul");
+const pct = (xs: number[], q: number) => {
+  const v = [...xs].sort((a, b) => a - b);
+  return v.length ? v[Math.min(v.length - 1, Math.ceil(q * v.length) - 1)] : null;
+};
+export function latencyLines(obs: Observation[]): string[] {
+  const out: string[] = [];
+  const secs = (ms: number | null) => (ms === null ? "—" : `${(ms / 1000).toFixed(1)} s`);
+  for (const tier of ["Step 2 seul", "Step 3", "Step 4"]) {
+    const l = obs.filter((o) => tierOf(o) === tier).map((o) => o.snapshot.timeline.decisionAvailableAt - o.snapshot.timeline.marketObservedAt);
+    if (!l.length) continue;
+    out.push(`${tier}: n=${l.length} · médiane ${secs(pct(l, 0.5))} · p95 ${secs(pct(l, 0.95))} · max ${secs(Math.max(...l))}`);
+  }
+  return out;
+}
 const line = (s: Stats) => (s.n ? `n=${s.n} · moyenne ${fmt(s.mean)} · médiane ${fmt(s.median)} · min ${fmt(s.min)} · max ${fmt(s.max)}` : "n=0");
 
 export function formatReport(obs: Observation[], now: number): string {
@@ -48,7 +66,7 @@ export function formatReport(obs: Observation[], now: number): string {
 
   out.push("", "CHECKPOINT COVERAGE (OK / dus ; autres statuts)");
   for (const { key, ms } of CHECKPOINTS) {
-    const due = obs.filter((o) => now >= o.snapshot.capturedAt + ms);
+    const due = obs.filter((o) => now >= o.snapshot.timeline.decisionAvailableAt + ms);
     const st = (s: string) => due.filter((o) => o.outcomes[key]?.status === s).length;
     const pending = due.filter((o) => !o.outcomes[key]).length;
     const delays = due.map((o) => o.outcomes[key]).filter((c) => c?.status === "OK").map((c) => c!.delayMs! / 60_000);
@@ -56,17 +74,20 @@ export function formatReport(obs: Observation[], now: number): string {
     out.push(`${key}: ${st("OK")}/${due.length} · UNAVAILABLE ${st("UNAVAILABLE")} · PROVIDER_ERROR ${st("PROVIDER_ERROR")} · MISSED ${st("MISSED")} · en attente ${pending}${dl.n ? ` · retard médian ${dl.median!.toFixed(1)} min (max ${dl.max!.toFixed(1)})` : ""}`);
   }
 
-  out.push("", "RETURNS BY DECISION (rendement vs prix T0, checkpoints OK uniquement ; n faible = purement descriptif)");
+  out.push("", "DECISION LATENCY (decisionAvailableAt − marketObservedAt)", ...latencyLines(obs));
+  out.push("", "DECISION RETURNS BY DECISION (vs prix à decisionAvailableAt ; checkpoints depuis decisionAvailableAt ; n faible = purement descriptif)");
   for (const d of DECISIONS) {
     const group = obs.filter((o) => o.snapshot.final.decision === d);
     if (!group.length) continue;
     out.push(`${d} (${group.length} observation(s))`);
-    for (const { key } of CHECKPOINTS) out.push(`  ${key.padEnd(3)} ${line(stats(returnsAt(group, key)))}`);
+    for (const { key } of CHECKPOINTS) out.push(`  ${key.padEnd(3)} ${line(stats(decisionReturnsAt(group, key)))}   [marché vs prix T0 : ${line(stats(marketReturnsAt(group, key)))}]`);
     const paths = group.map(observedPath).filter((p) => p.observedPoints > 0);
-    out.push(`  observé sur le chemin (checkpoints uniquement, pas un vrai ATH / drawdown) : max ${line(stats(paths.map((p) => p.maxObservedReturnPct!)))} | min ${line(stats(paths.map((p) => p.minObservedReturnPct!)))}`);
+    out.push(`  décision, observé sur le chemin (checkpoints uniquement, pas un vrai ATH / drawdown) : max ${line(stats(paths.map((p) => p.maxObservedReturnPct!)))} | min ${line(stats(paths.map((p) => p.minObservedReturnPct!)))}`);
   }
   const noPrice = obs.filter((o) => o.snapshot.market.priceUsd === null).length;
-  if (noPrice) out.push("", `${noPrice} observation(s) sans prix T0 : rendements inconnus (exclus des statistiques).`);
+  if (noPrice) out.push("", `${noPrice} observation(s) sans prix T0 : rendements marché inconnus (exclus des statistiques).`);
+  const noDecisionPrice = obs.filter((o) => o.snapshot.decisionMarket.priceUsd === null).length;
+  if (noDecisionPrice) out.push(`${noDecisionPrice} observation(s) sans prix à la décision : rendements décision inconnus (exclus des statistiques).`);
   return out.join("\n");
 }
 
@@ -76,7 +97,9 @@ export function exportRows(obs: Observation[]): Record<string, string | number |
     const s = o.snapshot;
     const p = observedPath(o);
     const row: Record<string, string | number | boolean | null> = {
-      observationId: s.observationId, capturedAt: new Date(s.capturedAt).toISOString(), mint: s.identity.mint, pairAddress: s.identity.pairAddress, symbol: s.identity.symbol,
+      observationId: s.observationId, marketObservedAt: new Date(s.timeline.marketObservedAt).toISOString(), decisionAvailableAt: new Date(s.timeline.decisionAvailableAt).toISOString(),
+      decisionLatencyMs: s.timeline.decisionAvailableAt - s.timeline.marketObservedAt, mint: s.identity.mint, pairAddress: s.identity.pairAddress, symbol: s.identity.symbol,
+      decisionMarketStatus: s.decisionMarket.status, priceUsdDecision: s.decisionMarket.priceUsd,
       priceUsdT0: s.market.priceUsd, liquidityUsdT0: s.market.liquidityUsd, marketCapT0: s.market.marketCap, ageMinutesT0: s.market.ageMinutes,
       candidate: s.funnel.candidate, step3Status: s.funnel.step3Status, step4Status: s.funnel.step4Status,
       opportunity: s.step2.opportunity, dexRisk: s.step2.risk, dexQuality: s.step2.quality, dexConfidence: s.step2.confidence, dexLabel: s.step2.label,
@@ -89,7 +112,8 @@ export function exportRows(obs: Observation[]): Record<string, string | number |
     for (const { key } of CHECKPOINTS) {
       const c = o.outcomes[key];
       row[`status_${key}`] = c?.status ?? null;
-      row[`return_${key}`] = c?.returnPct ?? null;
+      row[`decisionReturn_${key}`] = c?.decisionReturnPct ?? null;
+      row[`marketReturn_${key}`] = c?.marketReturnPct ?? null;
       row[`delayMin_${key}`] = c?.delayMs != null ? Math.round(c.delayMs / 6000) / 10 : null;
     }
     return row;

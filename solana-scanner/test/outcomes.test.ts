@@ -10,6 +10,7 @@ import { addObservations, loadStore, replaceOutcomes, saveStore } from "../src/o
 import { applyFetch, buildObservation, CHECKPOINTS, checkpointState, dueCheckpoints, hashSnapshot, observedPath, returnPct } from "../src/outcomes/tracker.ts";
 import type { CheckpointKey, Observation } from "../src/outcomes/tracker.ts";
 import { scorePair } from "../src/scoring/score.ts";
+import { okDecisionMarket, step2Timeline } from "./helpers/outcomes.ts";
 
 /** Offline fixtures only: real Step 2 scoring + real FinalAssessment, synthetic market data. */
 
@@ -22,7 +23,7 @@ const pair = (o: Partial<NormalizedPair> = {}): NormalizedPair => ({
 });
 const observe = (p: NormalizedPair = pair(), capturedAt = T0): Observation => {
   const score = scorePair(p, capturedAt);
-  return buildObservation({ pair: p, score, assessment: assessToken({ score }), capturedAt, candidate: false, onchain: null, step3Status: "NOT_RUN", wallets: null, step4Status: "NOT_RUN", scannerCommit: "test" });
+  return buildObservation({ pair: p, score, assessment: assessToken({ score }), timeline: step2Timeline(capturedAt), decisionMarket: okDecisionMarket(p, capturedAt), candidate: false, onchain: null, step3Status: "NOT_RUN", wallets: null, step4Status: "NOT_RUN", scannerCommit: "test" });
 };
 const at = (key: CheckpointKey, extraMin = 0) => T0 + CHECKPOINTS.find((c) => c.key === key)!.ms + extraMin * MIN;
 const ok = (price: number | null, o: Partial<NormalizedPair> = {}) => ({ status: "OK" as const, pair: pair({ priceUsd: price, ...o }) });
@@ -34,7 +35,7 @@ test("A: T0 snapshot holds what the scanner knew, detached and hashed", () => {
   const p = pair();
   const score = scorePair(p, T0);
   const fa = assessToken({ score });
-  const o = buildObservation({ pair: p, score, assessment: fa, capturedAt: T0, candidate: false, onchain: null, step3Status: "NOT_RUN", wallets: null, step4Status: "NOT_RUN" });
+  const o = buildObservation({ pair: p, score, assessment: fa, timeline: step2Timeline(T0), decisionMarket: okDecisionMarket(p, T0), candidate: false, onchain: null, step3Status: "NOT_RUN", wallets: null, step4Status: "NOT_RUN" });
   assert.equal(o.snapshot.observationId, `MINT_1:PAIR_A:${T0}`);
   assert.equal(o.snapshot.market.priceUsd, 0.001);
   assert.deepEqual([o.snapshot.step2.opportunity, o.snapshot.step2.label, o.snapshot.final.decision], [score.opportunity, score.label, fa.decision]);
@@ -54,7 +55,7 @@ test("B: the +5m update changes no snapshot field", () => {
   const u = applyFetch(o, at("5m", 1), ok(0.002, { liquidityUsd: 1, marketCap: 1, volumeH1: 1 }));
   assert.equal(snap(u), before);
   assert.equal(u.outcomes["5m"]!.status, "OK");
-  assert.equal(u.outcomes["5m"]!.returnPct, 100);
+  assert.equal(u.outcomes["5m"]!.decisionReturnPct, 100);
 });
 
 test("C: the +24h update changes no snapshot field", () => {
@@ -62,7 +63,7 @@ test("C: the +24h update changes no snapshot field", () => {
   const before = snap(o);
   for (const { key } of CHECKPOINTS) o = applyFetch(o, at(key, 1), ok(0.0005));
   assert.equal(snap(o), before);
-  assert.equal(o.outcomes["24h"]!.returnPct, -50);
+  assert.equal(o.outcomes["24h"]!.decisionReturnPct, -50);
   assert.equal(o.snapshot.market.priceUsd, 0.001, "T0 price never overwritten by a later one");
   // Any tampering with the snapshot is refused.
   const tampered = { ...o, snapshot: { ...o.snapshot, market: { ...o.snapshot.market, priceUsd: 0.0005 } } };
@@ -87,28 +88,29 @@ test("E: an already filled checkpoint is idempotent", () => {
 test("F: provider error → no -100 %, no price; retried while the window is open", () => {
   const o = applyFetch(observe(), at("1h", 1), { status: "PROVIDER_ERROR", error: "HTTP 429" });
   const c = o.outcomes["1h"]!;
-  assert.deepEqual([c.status, c.priceUsd, c.returnPct, c.attempts], ["PROVIDER_ERROR", null, null, 1]);
+  assert.deepEqual([c.status, c.priceUsd, c.decisionReturnPct, c.attempts], ["PROVIDER_ERROR", null, null, 1]);
   const retried = applyFetch(o, at("1h", 10), ok(0.0015));
-  assert.deepEqual([retried.outcomes["1h"]!.status, retried.outcomes["1h"]!.returnPct, retried.outcomes["1h"]!.attempts], ["OK", 50, 2]);
+  assert.deepEqual([retried.outcomes["1h"]!.status, retried.outcomes["1h"]!.decisionReturnPct, retried.outcomes["1h"]!.attempts], ["OK", 50, 2]);
 });
 
 test("G: pair absent from the provider response → UNAVAILABLE, no -100 %", () => {
   const c = applyFetch(observe(), at("3h", 1), { status: "UNAVAILABLE" }).outcomes["3h"]!;
-  assert.deepEqual([c.status, c.priceUsd, c.returnPct], ["UNAVAILABLE", null, null]);
+  assert.deepEqual([c.status, c.priceUsd, c.decisionReturnPct], ["UNAVAILABLE", null, null]);
 });
 
 test("H: T0 price absent → return unknown, never NaN", () => {
   const o = observe(pair({ priceUsd: null }));
   const c = applyFetch(o, at("5m", 1), ok(0.002)).outcomes["5m"]!;
   assert.equal(c.status, "OK");
-  assert.equal(c.returnPct, null);
-  assert.ok(c.note!.includes("prix T0 absent"));
+  assert.equal(c.decisionReturnPct, null, "the decision price here is the (absent) pair price too");
+  assert.equal(c.marketReturnPct, null);
+  assert.ok(c.note!.includes("inconnu"));
   for (const [a, b] of [[null, 1], [0, 1], [1, null], [Number.NaN, 1], [1, Number.POSITIVE_INFINITY]] as const) assert.equal(returnPct(a, b), null);
 });
 
 test("I: checkpoint price absent → return unknown", () => {
   const c = applyFetch(observe(), at("30m", 1), ok(null)).outcomes["30m"]!;
-  assert.deepEqual([c.status, c.priceUsd, c.returnPct], ["OK", null, null]);
+  assert.deepEqual([c.status, c.priceUsd, c.decisionReturnPct], ["OK", null, null]);
 });
 
 test("J: observedAt / delay are distinct from the target time; a passed window becomes MISSED", () => {
@@ -119,7 +121,7 @@ test("J: observedAt / delay are distinct from the target time; a passed window b
   // First update only at +2h: 5m, 15m, 30m windows have passed → MISSED; 1h is filled with its real delay.
   const late = applyFetch(observe(), T0 + 120 * MIN, ok(0.002));
   assert.deepEqual(["5m", "15m", "30m"].map((k) => late.outcomes[k as CheckpointKey]!.status), ["MISSED", "MISSED", "MISSED"]);
-  assert.ok(["5m", "15m", "30m"].every((k) => late.outcomes[k as CheckpointKey]!.returnPct === null));
+  assert.ok(["5m", "15m", "30m"].every((k) => late.outcomes[k as CheckpointKey]!.decisionReturnPct === null));
   assert.equal(late.outcomes["1h"]!.delayMs, 60 * MIN);
 });
 
@@ -128,7 +130,7 @@ test("K: same mint with two pairs → each observation follows its own T0 pair, 
   const b = observe(pair({ pairAddress: "PAIR_B", priceUsd: 0.002 }));
   assert.notEqual(a.snapshot.observationId, b.snapshot.observationId);
   assert.throws(() => applyFetch(a, at("5m", 1), ok(0.003, { pairAddress: "PAIR_B" })), /no silent substitution/);
-  assert.equal(applyFetch(b, at("5m", 1), ok(0.003, { pairAddress: "PAIR_B" })).outcomes["5m"]!.returnPct, 50);
+  assert.equal(applyFetch(b, at("5m", 1), ok(0.003, { pairAddress: "PAIR_B" })).outcomes["5m"]!.decisionReturnPct, 50);
 });
 
 test("L: re-running capture does not duplicate an observation; persistence round-trips", () => {
@@ -205,7 +207,7 @@ test("capturing never changes the scanner's results", () => {
   const before = JSON.stringify(score);
   const fa = assessToken({ score });
   const faBefore = JSON.stringify(fa);
-  let o = buildObservation({ pair: p, score, assessment: fa, capturedAt: T0, candidate: true, onchain: null, step3Status: "FAILED", wallets: null, step4Status: "NOT_RUN" });
+  let o = buildObservation({ pair: p, score, assessment: fa, timeline: { ...step2Timeline(T0), step3StartedAt: T0, step3CompletedAt: T0 }, decisionMarket: okDecisionMarket(p, T0), candidate: true, onchain: null, step3Status: "FAILED", wallets: null, step4Status: "NOT_RUN" });
   o = applyFetch(o, at("5m", 1), ok(0.5));
   assert.equal(JSON.stringify(score), before);
   assert.equal(JSON.stringify(fa), faBefore);
