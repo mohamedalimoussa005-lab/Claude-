@@ -469,3 +469,50 @@ fois ne donnent qu'une incertitude ; « WHY CHANGED » n'apparaît que si la dé
 lancée ».
 Aucun score Step 2 / 3 / 4, aucune pénalité ni aucun cluster ne change. Affichage : panneau FINAL ASSESSMENT
 dans le détail d'un token ; `scripts/wallets-live.ts` imprime `formatAssessment`.
+
+## Outcome Tracker V1 (`src/outcomes/`, `scripts/outcomes.ts`)
+
+Couche d'**observation** séparée : elle consomme les résultats du scanner et n'en modifie aucun. Rien de ce
+qu'elle mesure ne revient dans Step 2 / 3 / 4 ni dans le Final Decision Engine.
+
+- **Snapshot (T0, immuable)** : ce que le scanner savait au moment du scan DEX — identité (mint, paire exacte,
+  symbole, dex), marché (prix, liquidité, market cap / FDV, volumes, achats / ventes, âge), Step 2 (Opportunity,
+  DEX Risk / Quality / Confidence, label), Step 3 et Step 4 seulement s'ils ont réellement tourné (sinon `null`),
+  FinalAssessment complet (décision, base, blockers, cautions, raisons), et le funnel (`candidate`,
+  `step3Status` / `step4Status` : `NOT_RUN`, `COMPLETE`, `PARTIAL`, `FAILED`). Le snapshot est copié (détaché des
+  objets du scanner) et haché (sha256) à la capture : toute mise à jour qui le modifierait est refusée.
+- **Outcomes** : ajoutés plus tard à côté du snapshot, aux checkpoints **5m, 15m, 30m, 1h, 3h, 6h, 12h, 24h** après
+  T0 — `targetAt`, `observedAt` (heure réelle de la mesure), `delayMs`, prix, liquidité, market cap / FDV,
+  volumes, `returnPct` = (prix / prix T0 − 1) × 100, ou `null` si un des deux prix manque (jamais NaN / Infinity).
+- **Statuts** : `OK` (la paire T0 a répondu), `UNAVAILABLE` (le fournisseur a répondu sans cette paire),
+  `PROVIDER_ERROR` (échec de la requête), `MISSED` (fenêtre passée sans mesure). Aucun ne vaut prix 0 ni −100 % ;
+  un checkpoint non encore stocké est NOT_DUE ou en attente. UNAVAILABLE / PROVIDER_ERROR sont retentés tant que la
+  fenêtre est ouverte ; OK et MISSED sont définitifs (idempotence).
+- **Fenêtre d'un checkpoint** : de sa cible jusqu'à la cible du suivant (24h : sans limite, retard enregistré). Une
+  mesure prise plus tard décrirait un autre horizon, donc le checkpoint devient MISSED. `outcomes:update` doit donc
+  tourner régulièrement (au moins toutes les ~5 min pour 5m / 15m).
+- **Paire** : toujours la paire exacte du snapshot (lookup DexScreener par adresse de paire, par lots de 30), jamais
+  une autre paire du même mint.
+- **Métriques de chemin** : `maxObservedReturnPct` / `minObservedReturnPct` calculées sur les seuls checkpoints
+  observés — pas un vrai ATH ni un vrai drawdown entre deux checkpoints.
+- **Aucune étiquette d'issue** (gagnant, rug…) et aucun seuil : valeurs brutes uniquement.
+
+Commandes :
+
+```bash
+npm run outcomes:capture             # scan normal → snapshots T0 de tous les tokens scorés
+npm run outcomes:capture -- --wallets   # + Step 4 sur les candidats (comme le bouton de l'UI)
+npm run outcomes:update              # remplit les checkpoints dus (1 appel DexScreener par 30 paires)
+npm run outcomes:report              # rapport descriptif : funnel, décisions, couverture, rendements par horizon
+npm run outcomes:export              # CSV plat (signaux T0 + outcomes) dans le dossier du dataset
+```
+
+Population : chaque capture enregistre **tous** les tokens scorés par le scan (FinalAssessment Step 2 seul pour
+la plupart) ; Step 3 ne tourne que sur `selectCandidates`, comme dans l'UI, et Step 4 seulement avec `--wallets`.
+Le snapshot dit quels moteurs ont tourné ; aucun résultat manquant n'est fabriqué. L'identifiant
+`mint:paire:T0` empêche de dupliquer une observation ; chaque nouvelle capture (nouveau T0) crée de nouvelles
+observations, y compris pour un token déjà suivi.
+
+Dataset : `solana-scanner/data/outcomes/observations.json` (ignoré par git ; `OUTCOMES_DIR` pour un autre dossier).
+Pour réinitialiser : supprimer `data/outcomes/`. La décision du scanner décrit ce qu'il observait à T0 ; l'outcome
+est ce que le marché a fait ensuite. Le rapport affiche `n` partout et ne revendique aucune significativité.

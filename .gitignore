@@ -12,3 +12,6 @@ vite.config.d.ts
 !.env.example
 # Wallet history API cache snapshots (server-side)
 .cache/
+
+# Outcome Tracker runtime dataset (live observations, never committed)
+solana-scanner/data/outcomes/

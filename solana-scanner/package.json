@@ -17,7 +17,11 @@
     "test:live": "node --experimental-strip-types --no-warnings scripts/live-test.ts",
     "score:live": "node --experimental-strip-types --no-warnings scripts/score-live.ts",
     "onchain:live": "node --experimental-strip-types --no-warnings scripts/onchain-live.ts",
-    "wallets:live": "node --experimental-strip-types --no-warnings scripts/wallets-live.ts"
+    "wallets:live": "node --experimental-strip-types --no-warnings scripts/wallets-live.ts",
+    "outcomes:capture": "node --experimental-strip-types --no-warnings scripts/outcomes.ts capture",
+    "outcomes:update": "node --experimental-strip-types --no-warnings scripts/outcomes.ts update",
+    "outcomes:report": "node --experimental-strip-types --no-warnings scripts/outcomes.ts report",
+    "outcomes:export": "node --experimental-strip-types --no-warnings scripts/outcomes.ts export"
   },
   "dependencies": {
     "react": "^18.3.1",
