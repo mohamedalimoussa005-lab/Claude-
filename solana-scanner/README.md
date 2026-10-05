@@ -565,3 +565,9 @@ donc chaque étape au lieu de tout attribuer à T0 :
 - **Données v1** : un dataset v1 (sans timeline) est refusé par le chargeur et n'est jamais migré avec des heures
   inventées. `npm run outcomes:archive-legacy` le déplace tel quel vers
   `data/outcomes/backups/observations-legacy-v0-<date>.json` ; la capture suivante démarre un dataset v2.
+
+### Déploiement persistant (VPS Linux)
+
+Voir [`docs/OUTCOMES_DEPLOYMENT.md`](docs/OUTCOMES_DEPLOYMENT.md) : service systemd (`deploy/systemd/`), dataset
+dans `/var/lib/solana-scanner/outcomes` (`OUTCOMES_DIR`), clé dans `/etc/solana-scanner.env` (root, 600), backup
+quotidien par timer, `deploy/outcomes-ctl.sh` pour status / report / backup / disk / logs.

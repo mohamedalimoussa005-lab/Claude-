@@ -1,0 +1,22 @@
+# Daily local backup of the outcome dataset — template (started by solana-outcomes-backup.timer).
+# Copies observations.json to $OUTCOMES_DIR/backups/observations-YYYYMMDD-HHMMSS.json under the dataset
+# lock; never overwrites a backup, never modifies the dataset. No network, no secret needed.
+
+[Unit]
+Description=Solana scanner - daily backup of the outcome dataset
+
+[Service]
+Type=oneshot
+User=solana
+Group=solana
+WorkingDirectory=/opt/solana-scanner/solana-scanner
+Environment=OUTCOMES_DIR=/var/lib/solana-scanner/outcomes
+Environment=HOME=/var/lib/solana-scanner
+ExecStart=/usr/bin/node --experimental-strip-types --no-warnings scripts/outcomes.ts backup
+StateDirectory=solana-scanner
+StateDirectoryMode=0750
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0027

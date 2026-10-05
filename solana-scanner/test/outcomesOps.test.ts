@@ -172,3 +172,18 @@ test("J: Ctrl+C (SIGINT) on a process holding the lock releases it", async () =>
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("J': SIGTERM (systemctl stop / restart) on a process holding the lock releases it too", async () => {
+  const dir = tmp();
+  try {
+    const h = lockHolder(dir, null);
+    await h.locked;
+    h.child.kill("SIGTERM");
+    assert.equal(await h.exited, 143);
+    assert.ok(!existsSync(lockPathOf(dir)), "lock file removed");
+    const s = loadStore(dir);
+    assert.equal(s.observations.length, 0, "nothing written by the interrupted holder");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

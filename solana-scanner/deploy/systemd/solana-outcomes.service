@@ -1,0 +1,40 @@
+# Outcome data collection — template. Install: see docs/OUTCOMES_DEPLOYMENT.md.
+# Runs exactly what `npm run outcomes:collect` runs (node directly: clean signals, no npm cache needed):
+# UPDATE every 5 min, CAPTURE (--wallets, Step 3/4 on candidates only) every 30 min.
+# Secrets come only from /etc/solana-scanner.env (root:root 600). Nothing secret is logged.
+
+[Unit]
+Description=Solana scanner - outcome data collection (update 5 min, capture 30 min)
+Wants=network-online.target
+After=network-online.target
+# Keep retrying forever (a long provider outage must not end the collection).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=solana
+Group=solana
+WorkingDirectory=/opt/solana-scanner/solana-scanner
+EnvironmentFile=/etc/solana-scanner.env
+# Persistent dataset (observations.json, lock, backups/): never the repo or a temp dir.
+Environment=OUTCOMES_DIR=/var/lib/solana-scanner/outcomes
+Environment=HOME=/var/lib/solana-scanner
+ExecStart=/usr/bin/node --experimental-strip-types --no-warnings scripts/outcomes-collect.ts
+# Crash / non-zero exit → restart after 30 s. `systemctl stop` (SIGTERM) exits 0 and is not restarted.
+Restart=on-failure
+RestartSec=30
+# SIGTERM goes to the runner and its capture/update children: they release the dataset lock and exit.
+KillMode=control-group
+TimeoutStopSec=60
+# /var/lib/solana-scanner, owned by User=, created by systemd.
+StateDirectory=solana-scanner
+StateDirectoryMode=0750
+# Hardening: only the state directory is writable.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
