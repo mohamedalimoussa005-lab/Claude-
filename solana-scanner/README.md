@@ -516,3 +516,27 @@ observations, y compris pour un token déjà suivi.
 Dataset : `solana-scanner/data/outcomes/observations.json` (ignoré par git ; `OUTCOMES_DIR` pour un autre dossier).
 Pour réinitialiser : supprimer `data/outcomes/`. La décision du scanner décrit ce qu'il observait à T0 ; l'outcome
 est ce que le marché a fait ensuite. Le rapport affiche `n` partout et ne revendique aucune significativité.
+
+### Collecte des données (Data Collection V1)
+
+```bash
+npm run outcomes:collect                  # UPDATE toutes les 5 min, CAPTURE --wallets toutes les 30 min (Ctrl+C pour arrêter)
+npm run outcomes:collect -- --once        # une CAPTURE puis un UPDATE, puis sortie
+npm run outcomes:collect -- --no-wallets  # captures sans Step 4
+npm run outcomes:status                   # santé du dataset, sans réseau
+npm run outcomes:backup                   # copie dans data/outcomes/backups/observations-YYYYMMDD-HHMMSS.json
+```
+
+- Le runner n'orchestre que les commandes existantes (aucune logique de scoring). Les deux calendriers sont
+  indépendants : une capture longue (Step 3 / 4 : plusieurs minutes) ne retarde jamais les mises à jour de 5 min.
+  Jamais deux captures ni deux mises à jour en même temps.
+- **Un seul écrivain** : chaque lecture-modification-écriture du dataset se fait sous un verrou
+  (`data/outcomes/observations.lock`, créé en exclusif avec pid + heure). Un verrou dont le processus a disparu,
+  ou vieux de plus de 15 min, est repris ; il est libéré en fin d'opération et sur Ctrl+C / SIGTERM. La capture
+  ne verrouille que son ajout final (le scan peut durer) ; la mise à jour verrouille chargement → fetch →
+  écriture, pour qu'une capture concurrente ne soit jamais écrasée par une copie périmée.
+- **Reprise** : après un arrêt, un crash ou une erreur fournisseur, relancer suffit — `update` reprend les
+  checkpoints dus ; une capture déjà enregistrée n'est pas dupliquée ; un checkpoint OK n'est jamais réécrit.
+- **Chaque capture crée une nouvelle observation par token** (T0 = heure du scan) : un token présent dans
+  plusieurs scans donne plusieurs séries qui se chevauchent, à traiter à l'analyse.
+- Le dossier `data/outcomes/` (backups compris) est ignoré par git : aucune observation live n'est commitée.

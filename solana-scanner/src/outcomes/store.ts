@@ -4,7 +4,7 @@
  * OUTCOMES_DIR overrides the directory (tests use a temporary one).
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hashSnapshot, SCHEMA_VERSION } from "./tracker.ts";
@@ -16,7 +16,7 @@ export interface OutcomeStore {
 }
 
 export const defaultOutcomesDir = () => process.env.OUTCOMES_DIR ?? resolve(dirname(fileURLToPath(import.meta.url)), "../../data/outcomes");
-const fileOf = (dir: string) => join(dir, "observations.json");
+export const fileOf = (dir: string) => join(dir, "observations.json");
 
 export function loadStore(dir: string = defaultOutcomesDir()): OutcomeStore {
   const f = fileOf(dir);
@@ -54,4 +54,19 @@ export function replaceOutcomes(store: OutcomeStore, updated: Observation[]): Ou
       return { snapshot: o.snapshot, snapshotHash: o.snapshotHash, outcomes: u.outcomes };
     }),
   };
+}
+
+export const datasetBytes = (dir: string = defaultOutcomesDir()): number | null => (existsSync(fileOf(dir)) ? statSync(fileOf(dir)).size : null);
+
+/** Copies the dataset to backups/observations-YYYYMMDD-HHMMSS.json; the source is only read. */
+export function backupStore(dir: string = defaultOutcomesDir(), now: Date = new Date()): string | null {
+  const src = fileOf(dir);
+  if (!existsSync(src)) return null;
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp = `${now.getUTCFullYear()}${p(now.getUTCMonth() + 1)}${p(now.getUTCDate())}-${p(now.getUTCHours())}${p(now.getUTCMinutes())}${p(now.getUTCSeconds())}`;
+  mkdirSync(join(dir, "backups"), { recursive: true });
+  let dest = join(dir, "backups", `observations-${stamp}.json`);
+  for (let i = 1; existsSync(dest); i++) dest = join(dir, "backups", `observations-${stamp}-${i}.json`);
+  copyFileSync(src, dest);
+  return dest;
 }

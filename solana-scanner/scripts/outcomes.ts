@@ -6,6 +6,10 @@
  *   npm run outcomes:update                   fills the checkpoints that are due, from the exact T0 pair
  *   npm run outcomes:report                   descriptive report
  *   npm run outcomes:export                   flat CSV (T0 signals + raw outcomes) next to the dataset
+ *   npm run outcomes:status                   collection health (no network)
+ *   npm run outcomes:backup                   copy of the dataset under data/outcomes/backups/
+ *
+ * Every write of the dataset runs under a single-writer lock (src/outcomes/lock.ts).
  *
  * Dataset: data/outcomes/observations.json (git-ignored; OUTCOMES_DIR overrides). Delete the
  * directory to reset. Server-side only: keys stay in this process and are never written.
@@ -22,7 +26,9 @@ import { assessToken } from "../src/final/assessment.ts";
 import { OnchainService, selectCandidates } from "../src/onchain/service.ts";
 import type { OnchainResult } from "../src/onchain/service.ts";
 import { exportRows, formatReport, toCsv } from "../src/outcomes/report.ts";
-import { addObservations, defaultOutcomesDir, loadStore, replaceOutcomes, saveStore } from "../src/outcomes/store.ts";
+import { withLock } from "../src/outcomes/lock.ts";
+import { formatStatus } from "../src/outcomes/status.ts";
+import { addObservations, backupStore, datasetBytes, defaultOutcomesDir, fileOf, loadStore, replaceOutcomes, saveStore } from "../src/outcomes/store.ts";
 import { applyFetch, buildObservation, dueCheckpoints } from "../src/outcomes/tracker.ts";
 import type { EngineStatus, FetchResult, Observation } from "../src/outcomes/tracker.ts";
 import { createServerSolanaRpc } from "../src/rpc/serverRpc.ts";
@@ -76,12 +82,23 @@ async function capture() {
     const assessment = assessToken({ score: row.score, onchain: oc, wallets: intel });
     obs.push(buildObservation({ pair: row.pair, score: row.score, assessment, capturedAt: scan.fetchedAt, candidate, onchain: oc, step3Status: step3, wallets: intel, step4Status: step4, scannerCommit: commit }));
   }
-  const { store, added, skipped } = addObservations(loadStore(dir), obs);
-  saveStore(store, dir);
-  console.log(`capture ${new Date(scan.fetchedAt).toISOString()} : ${rows.length} tokens scannés, ${candidates.size} candidats, ${added} observation(s) ajoutée(s), ${skipped} déjà présente(s) → ${dir}`);
+  // Only the read-modify-write of the dataset is locked (the scan itself may take minutes).
+  const { added, skipped, total } = await withLock(dir, () => {
+    const r = addObservations(loadStore(dir), obs);
+    saveStore(r.store, dir);
+    return { added: r.added, skipped: r.skipped, total: r.store.observations.length };
+  });
+  const st = (k: "step3Status" | "step4Status") => ["COMPLETE", "PARTIAL", "FAILED"].map((v) => `${v} ${obs.filter((o) => o.snapshot.funnel[k] === v).length}`).join(" / ");
+  console.log(`[CAPTURE] ${new Date().toISOString()} T0 ${new Date(scan.fetchedAt).toISOString()} · tokens ${rows.length} · candidats ${candidates.size} · ajoutées ${added} · déjà présentes ${skipped} · Step 3 ${st("step3Status")} · Step 4 ${withWallets ? st("step4Status") : "non demandé"}`);
+  console.log(`[DATASET] ${total} observation(s) · ${datasetBytes(dir) ?? 0} octets`);
 }
 
 async function update() {
+  // Load → fetch → save under the lock: a concurrent capture cannot be overwritten by a stale copy.
+  await withLock(dir, updateLocked);
+}
+
+async function updateLocked() {
   const now = Date.now();
   const store = loadStore(dir);
   const due = store.observations.filter((o) => dueCheckpoints(o, now).length);
@@ -110,20 +127,31 @@ async function update() {
   const fetchedAt = Date.now();
   const updated = store.observations.map((o) => applyFetch(o, fetchedAt, results.get(`${o.snapshot.identity.chainId}:${o.snapshot.identity.pairAddress}`) ?? null));
   saveStore(replaceOutcomes(store, updated), dir);
-  console.log(`update : ${store.observations.length} observation(s), ${due.length} avec checkpoint(s) dû(s), ${calls} appel(s) DexScreener`);
+  // Checkpoint records written or changed by this run, by status.
+  const written: Record<string, number> = { OK: 0, UNAVAILABLE: 0, PROVIDER_ERROR: 0, MISSED: 0 };
+  store.observations.forEach((o, i) => {
+    for (const [k, c] of Object.entries(updated[i].outcomes)) if (c && JSON.stringify(c) !== JSON.stringify(o.outcomes[k as keyof typeof o.outcomes])) written[c.status]++;
+  });
+  console.log(`[UPDATE] ${new Date(fetchedAt).toISOString()} · observations avec checkpoint dû ${due.length} · appels DexScreener ${calls} · OK ${written.OK} · UNAVAILABLE ${written.UNAVAILABLE} · PROVIDER_ERROR ${written.PROVIDER_ERROR} · MISSED ${written.MISSED}`);
+  console.log(`[DATASET] ${store.observations.length} observation(s) · ${datasetBytes(dir) ?? 0} octets`);
 }
 
 async function main() {
   if (cmd === "capture") return capture();
   if (cmd === "update") return update();
   if (cmd === "report") return console.log(formatReport(loadStore(dir).observations, Date.now()));
+  if (cmd === "status") return console.log(formatStatus(loadStore(dir).observations, Date.now(), datasetBytes(dir), fileOf(dir)));
+  if (cmd === "backup") {
+    const dest = await withLock(dir, () => backupStore(dir));
+    return console.log(dest ? `[BACKUP] ${dest}` : "[BACKUP] aucun dataset à sauvegarder");
+  }
   if (cmd === "export") {
     mkdirSync(dir, { recursive: true });
     const f = join(dir, "export.csv");
     writeFileSync(f, toCsv(exportRows(loadStore(dir).observations)));
     return console.log(`export → ${f}`);
   }
-  console.log("usage : outcomes.ts capture [--wallets] | update | report | export");
+  console.log("usage : outcomes.ts capture [--wallets] | update | report | export | status | backup");
   process.exitCode = 1;
 }
 await main();

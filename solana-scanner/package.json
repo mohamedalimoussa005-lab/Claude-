@@ -21,7 +21,10 @@
     "outcomes:capture": "node --experimental-strip-types --no-warnings scripts/outcomes.ts capture",
     "outcomes:update": "node --experimental-strip-types --no-warnings scripts/outcomes.ts update",
     "outcomes:report": "node --experimental-strip-types --no-warnings scripts/outcomes.ts report",
-    "outcomes:export": "node --experimental-strip-types --no-warnings scripts/outcomes.ts export"
+    "outcomes:export": "node --experimental-strip-types --no-warnings scripts/outcomes.ts export",
+    "outcomes:status": "node --experimental-strip-types --no-warnings scripts/outcomes.ts status",
+    "outcomes:backup": "node --experimental-strip-types --no-warnings scripts/outcomes.ts backup",
+    "outcomes:collect": "node --experimental-strip-types --no-warnings scripts/outcomes-collect.ts"
   },
   "dependencies": {
     "react": "^18.3.1",
