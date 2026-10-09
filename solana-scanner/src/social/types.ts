@@ -45,8 +45,19 @@ export const EVIDENCE_TYPES = [
   "identity_claim", // is the token what it claims to be
   "claim_check", // a post's claim compared with data
   "data_gap", // something that could not be obtained
+  "liquidity_depth", // executable depth simulated from a pool's observed state
 ] as const;
 export type EvidenceType = (typeof EVIDENCE_TYPES)[number];
+
+/**
+ * How an entry's content was obtained.
+ *   observed   read directly from a source (the default).
+ *   computed   a deterministic calculation from observed entries (`basedOn`), with an exact formula.
+ *   estimated  a calculation that is known to be incomplete (unread data, unverified formula, unsupported feature).
+ * A computed entry may be a FACT only when its formula is exact; an estimated entry is never a FACT.
+ */
+export const EVIDENCE_DERIVATIONS = ["observed", "computed", "estimated"] as const;
+export type EvidenceDerivation = (typeof EVIDENCE_DERIVATIONS)[number];
 
 export type FactValue = string | number | boolean | null;
 
@@ -62,6 +73,8 @@ export interface EvidenceInput {
   type: EvidenceType;
   source: EvidenceSource;
   status: EvidenceStatus;
+  /** Defaults to "observed". */
+  derivation?: EvidenceDerivation;
   /** One sentence describing the observation. */
   summary: string;
   facts: EvidenceFact[];
@@ -90,6 +103,7 @@ export interface Evidence {
   readonly type: EvidenceType;
   readonly source: EvidenceSource;
   readonly status: EvidenceStatus;
+  readonly derivation: EvidenceDerivation;
   readonly summary: string;
   readonly facts: readonly Readonly<EvidenceFact>[];
   readonly observedAt: string;

@@ -515,6 +515,24 @@ Un token sans aucune preuve est `UNKNOWN` (jamais 0). Ce score est distinct de l
 Les tests (`test/social*.test.ts`, fixtures dans `test/fixtures/social/`) reprennent les résultats des Phases 2, 3, 4
 et 4B de DETECTIVE, sans appel réseau.
 
+### Phase 5B : moteur de profondeur de liquidité (`src/social/depth/`)
+
+Simulation **déterministe, hors réseau, en lecture seule** de la profondeur d'achat et de vente sur Raydium CLMM,
+Raydium CP-Swap et PumpSwap. **Une simulation n'est jamais une garantie d'exécution** (slippage réel, ordre des
+transactions, MEV, frais dynamiques et changements de pool ne sont pas modélisés). Aucun score existant n'est modifié.
+
+- Arithmétique entière (BigInt) avec arrondis explicites ; les flottants ne servent qu'à l'affichage.
+- Formules reprises des sources des programmes (CLMM, CP-Swap) ou du SDK officiel (PumpSwap, programme fermé) et
+  validées par rejeu d'événements on-chain réels (fixtures dans `test/fixtures/social/depth/`).
+- Sorties : profondeur achat/vente à 0,5 / 1 / 5 / 10 %, ordres 50 / 100 / 500 / 1 000 / 10 000 $, ventes de 1 % et 5 %
+  de l'offre, aller-retour immédiat (frais + taxe Token-2022 inclus), capacité maximale.
+- Cas non gérés renvoyés explicitement (`unsupported`, `beyond_loaded_data`, `pool_depleted`…), jamais devinés :
+  frais dynamiques CLMM, ordres limites, swaps désactivés.
+- `evidence.ts` inscrit les résultats au ledger en distinguant `derivation` : `observed` / `computed` / `estimated`
+  (un calcul PumpSwap reste un INDICE ; un résultat incomplet n'est jamais un FAIT).
+- `liquidityRisk.ts` : score de risque de liquidité **brouillon** (`draft-0`, `draft_unvalidated`), non branché.
+- Tests : `test/socialDepth*.test.ts` (unitaires, propriétés pseudo-aléatoires, cas limites), sans réseau.
+
 ## Outcome Tracker V1 (`src/outcomes/`, `scripts/outcomes.ts`)
 
 Couche d'**observation** séparée : elle consomme les résultats du scanner et n'en modifie aucun. Rien de ce

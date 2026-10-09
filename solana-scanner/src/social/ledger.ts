@@ -9,10 +9,11 @@
  *    HYPOTHESIS on FACTs / INDICATIONs. A hypothesis can never support a stronger entry.
  *  - Ids are derived from the content; the same observation cannot be added twice.
  *  - An event cannot be dated after its observation.
+ *  - A computed entry must name the observed entries it is computed from; an estimated entry is never a FACT.
  */
 
 import type { Evidence, EvidenceFact, EvidenceInput, EvidenceStatus, LedgerSnapshot } from "./types.ts";
-import { EVIDENCE_SOURCES, EVIDENCE_STATUSES, EVIDENCE_TYPES } from "./types.ts";
+import { EVIDENCE_DERIVATIONS, EVIDENCE_SOURCES, EVIDENCE_STATUSES, EVIDENCE_TYPES } from "./types.ts";
 import { isSignature, isSolanaAddress, parseIsoUtc } from "./validate.ts";
 
 export type LedgerErrorCode =
@@ -22,6 +23,7 @@ export type LedgerErrorCode =
   | "missing_limits"
   | "missing_missing"
   | "missing_basis"
+  | "bad_derivation"
   | "unknown_basis"
   | "basis_too_weak"
   | "duplicate"
@@ -78,6 +80,7 @@ export function evidenceId(e: {
   type: string;
   source: string;
   status: string;
+  derivation: string;
   basedOn: readonly string[];
   signature: string | null;
   slot: number | null;
@@ -85,8 +88,9 @@ export function evidenceId(e: {
   addresses: readonly string[];
   summary: string;
 }): string {
-  // The status and the basis are part of the identity: relabelling an INDICATION as a FACT changes the id.
-  const key = [e.mint ?? "", e.type, e.source, e.status, [...e.basedOn].sort().join(","), e.signature ?? "", e.slot ?? "", e.url ?? "", [...e.addresses].sort().join(","), e.summary].join("\u001f");
+  // The status, the derivation and the basis are part of the identity: relabelling an INDICATION as a FACT
+  // changes the id. An "observed" derivation adds nothing, so ids of entries written before it are unchanged.
+  const key = [e.mint ?? "", e.type, e.source, e.status, [...e.basedOn].sort().join(","), ...(e.derivation === "observed" ? [] : [e.derivation]), e.signature ?? "", e.slot ?? "", e.url ?? "", [...e.addresses].sort().join(","), e.summary].join("\u001f");
   return `ev_${fnv1a64(key)}`;
 }
 
@@ -95,6 +99,9 @@ export function buildEvidence(input: EvidenceInput): Evidence {
   if (!(EVIDENCE_STATUSES as readonly string[]).includes(input.status)) fail("invalid_field", `unknown status ${String(input.status)}`);
   if (!(EVIDENCE_TYPES as readonly string[]).includes(input.type)) fail("invalid_field", `unknown type ${String(input.type)}`);
   if (!(EVIDENCE_SOURCES as readonly string[]).includes(input.source)) fail("invalid_field", `unknown source ${String(input.source)}`);
+
+  const derivation = input.derivation ?? "observed";
+  if (!(EVIDENCE_DERIVATIONS as readonly string[]).includes(derivation)) fail("invalid_field", `unknown derivation ${String(derivation)}`);
 
   const summary = nonEmpty(input.summary, "summary");
   const mint = input.mint ?? null;
@@ -131,6 +138,11 @@ export function buildEvidence(input: EvidenceInput): Evidence {
   const missing = strings(input.missing, "missing");
   const anchored = signature !== null || slot !== null || addresses.length > 0 || url !== null;
 
+  if (derivation === "computed" && basedOn.length === 0) fail("bad_derivation", `computed entry "${summary}" must name the observed entries it is computed from (basedOn)`);
+  if (derivation === "computed" && (input.status === "HYPOTHESIS" || input.status === "UNVERIFIED")) fail("bad_derivation", `a computed entry is a FACT or an INDICATION, not a ${input.status}: "${summary}"`);
+  if (derivation === "estimated" && input.status === "FACT") fail("bad_derivation", `an estimated entry can never be a FACT: "${summary}"`);
+  if (derivation === "estimated" && basedOn.length === 0) fail("bad_derivation", `estimated entry "${summary}" must name the entries it is estimated from (basedOn)`);
+
   switch (input.status) {
     case "FACT":
       if (!anchored) fail("missing_anchor", `FACT "${summary}" needs a signature, a slot, an address or a URL`);
@@ -150,7 +162,7 @@ export function buildEvidence(input: EvidenceInput): Evidence {
       break;
   }
 
-  const base = { mint, type: input.type, source: input.source, status: input.status, basedOn, signature, slot, url, addresses, summary };
+  const base = { mint, type: input.type, source: input.source, status: input.status, derivation, basedOn, signature, slot, url, addresses, summary };
   const id = evidenceId(base);
   return Object.freeze({
     id,
@@ -158,6 +170,7 @@ export function buildEvidence(input: EvidenceInput): Evidence {
     type: input.type,
     source: input.source,
     status: input.status,
+    derivation,
     summary,
     facts: Object.freeze(facts),
     observedAt: input.observedAt,
