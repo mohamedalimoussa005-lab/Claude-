@@ -470,6 +470,51 @@ lancée ».
 Aucun score Step 2 / 3 / 4, aucune pénalité ni aucun cluster ne change. Affichage : panneau FINAL ASSESSMENT
 dans le détail d'un token ; `scripts/wallets-live.ts` imprime `formatAssessment`.
 
+## Evidence Ledger (`src/social/`) : preuves de DETECTIVE
+
+Couche **autonome et en lecture seule** : elle conserve ce que DETECTIVE a observé (posts X, DEX Screener, Helius,
+RPC Solana) et en mesure la fiabilité. Elle n'appelle ni réseau, ni horloge, ni variable d'environnement, n'importe
+rien du scoring, et **aucun module existant ne l'importe** : les scores Opportunity, Risk, Quality et Confidence
+ne peuvent pas changer (`test/socialIsolation.test.ts` le vérifie).
+
+| Fichier | Rôle |
+|---|---|
+| `types.ts` | statuts, sources, types de preuve, formes `Evidence` / `EvidenceInput` |
+| `ledger.ts` | `EvidenceLedger`: ajout validé, ids déterministes, `toJSON` / `fromJSON` |
+| `validate.ts` | adresse (32 octets base58), signature (64 octets), horodatage ISO UTC |
+| `config.ts` | **tous** les poids et seuils du score de confiance |
+| `dataConfidence.ts` | `scoreEvidenceDataConfidence(ledger, mint, now)` |
+| `format.ts` | rendu texte (libellés français) |
+
+**Une preuve** : id, token (mint), type, source, signature et slot (quand disponibles), adresses, URL, date
+d'observation (et date de l'événement), faits observés, `basedOn`, **limites** et **données manquantes**.
+
+**Statuts** (`FAIT VÉRIFIÉ`, `INDICE`, `HYPOTHÈSE`, `NON VÉRIFIÉ`), appliqués à l'insertion :
+- un FAIT exige une ancre (signature, slot, adresse ou URL) et au moins un fait observé ;
+- un INDICE ou une HYPOTHÈSE doivent énoncer leurs limites ; une HYPOTHÈSE doit citer ses preuves (`basedOn`) ;
+- un NON VÉRIFIÉ doit dire ce qui manque ;
+- **pas de blanchiment** : un FAIT ne repose que sur des FAITS, un INDICE sur des FAITS / INDICES, une HYPOTHÈSE sur des
+  FAITS / INDICES ; une hypothèse ne soutient jamais une entrée plus forte, ni une autre hypothèse ;
+- le statut fait partie de l'id : réécrire un INDICE en FAIT dans un instantané est détecté.
+
+**Evidence Data Confidence (0–100)** : fiabilité des preuves collectées, **pas une probabilité de profit**, ni un
+signal de prix, ni un score de risque. Quatre composantes calculées uniquement à partir des **métadonnées**
+(statut, source, ancre, type, heure), jamais de la valeur d'un fait :
+
+| Composante | Pts | Mesure |
+|---|---|---|
+| Complétude | 30 | part des vérifications attendues (mint, holders, pool, paire DEX, transaction) couvertes par un FAIT ou un INDICE |
+| Fraîcheur | 20 | âge des observations sensibles au temps (un FAIT lié à une signature ne vieillit pas) |
+| Vérifiabilité | 30 | poids du statut (1 / 0,6 / 0,2 / 0) × ancre (transaction 1, compte ou URL 0,85, aucune 0,5) |
+| Qualité des sources | 20 | fiabilité moyenne des sources (RPC 1, Helius 0,95, DEX Screener 0,7, X 0,4) + corroboration par 2 sources |
+
+Plafonds : aucun FAIT lu on-chain → 40 maximum (LOW) ; une seule source → 50. Niveaux : HIGH ≥ 70, MEDIUM ≥ 45.
+Un token sans aucune preuve est `UNKNOWN` (jamais 0). Ce score est distinct de la « Data Confidence » des wallets
+(`src/wallets/`) et de la Confidence DEX.
+
+Les tests (`test/social*.test.ts`, fixtures dans `test/fixtures/social/`) reprennent les résultats des Phases 2, 3, 4
+et 4B de DETECTIVE, sans appel réseau.
+
 ## Outcome Tracker V1 (`src/outcomes/`, `scripts/outcomes.ts`)
 
 Couche d'**observation** séparée : elle consomme les résultats du scanner et n'en modifie aucun. Rien de ce
