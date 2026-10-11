@@ -58,6 +58,7 @@ export const SOCIAL_CONFIG: SocialConfig = {
       round_trip_volume: "volatile",
       data_gap: "immutable",
       liquidity_depth: "volatile",
+      coordination_assessment: "slow",
     },
     decay: { slow: { fullMinutes: 24 * 60, zeroMinutes: 14 * 24 * 60 }, volatile: { fullMinutes: 15, zeroMinutes: 6 * 60 } },
     caps: { noOnchainFact: 40, singleSource: 50 },

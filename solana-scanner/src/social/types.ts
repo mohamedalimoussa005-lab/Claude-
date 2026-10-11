@@ -46,6 +46,7 @@ export const EVIDENCE_TYPES = [
   "claim_check", // a post's claim compared with data
   "data_gap", // something that could not be obtained
   "liquidity_depth", // executable depth simulated from a pool's observed state
+  "coordination_assessment", // hypothesis about coordination between wallets (never proof)
 ] as const;
 export type EvidenceType = (typeof EVIDENCE_TYPES)[number];
 

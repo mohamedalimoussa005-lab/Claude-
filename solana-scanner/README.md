@@ -533,6 +533,61 @@ transactions, MEV, frais dynamiques et changements de pool ne sont pas modélis�
 - `liquidityRisk.ts` : score de risque de liquidité **brouillon** (`draft-0`, `draft_unvalidated`), non branché.
 - Tests : `test/socialDepth*.test.ts` (unitaires, propriétés pseudo-aléatoires, cas limites), sans réseau.
 
+### Phase 5C : coordination entre wallets (`src/social/coordination/`)
+
+Mesure **déterministe, hors réseau, en lecture seule** de comportements susceptibles d'être coordonnés autour d'un
+token : acheteurs du lancement, financements communs, signaux de groupe, volume artificiel. Le module ne conclut
+**jamais** à une fraude ni à un contrôle commun : il produit des transactions observées, des indices statistiques
+et, au plus, une hypothèse qui liste les explications ordinaires qu'elle n'exclut pas. Aucun score existant
+(Opportunity, Risk, Quality, Confidence) n'est modifié ; le score de coordination est un **brouillon non branché**.
+
+| Fichier | Rôle |
+|---|---|
+| `model.ts` | types, couverture (`Coverage`) et **configuration unique** (`withConfig`) |
+| `normalize.ts` | frontière RPC : `getTransaction` (jsonParsed) → transaction normalisée → swap / transfert |
+| `entities.ts` | programmes DEX, routeurs, comptes de pourboire Jito ; les étiquettes d'échanges et de bots sont **fournies par l'appelant** |
+| `launch.ts` | cohorte des premiers acheteurs, concentration (HHI, Gini), collisions de slot vs base de référence |
+| `funding.ts` | graphe de financement (2 sauts, 50 wallets par défaut, réglables), sources communes |
+| `cluster.ts` | familles de signaux (financement, timing, montant, sortie, transfert) et groupes |
+| `washVolume.ts` | aller-retours, tailles et rythmes réguliers, cycles de transferts, modèle nul par permutation |
+| `evidence.ts` | inscription au ledger (FAIT observé / INDICE calculé / HYPOTHÈSE / NON VÉRIFIÉ) |
+| `risk.ts` | score de coordination **brouillon** (`draft-0`, `draft_unvalidated`) |
+
+**Séparation stricte des niveaux** : transactions et virements lus = `FAIT` (observed) ; comptages exacts sur données
+complètes = `FAIT` (computed) ; indices statistiques ou données partielles = `INDICE` (computed / estimated) ;
+interprétation = `HYPOTHÈSE` (estimated). Une HYPOTHÈSE n'est écrite que si **au moins trois familles** de signaux
+indépendantes sont présentes **dont une autre que le financement et le timing** : un financement commun et des
+achats synchronisés ne suffisent jamais, même si le seuil est abaissé.
+
+**Modèles nuls (déterministes, graine fixe, réglables)** : (1) synchronie du lancement : Monte-Carlo contre la
+distribution des achats de la fenêtre elle-même (un slot ne pèse pas plus que le 90ᵉ centile des slots occupés) ;
+(2) aller-retours : permutation des étiquettes de wallets sur les swaps ; (3) groupes : chaque groupe est comparé au
+**reste de la cohorte** dont les familles sont mélangées indépendamment, et l'hypothèse exige p < alpha — un lancement
+« chaud », où tout se produit en même temps par défaut, ne donne donc jamais d'hypothèse.
+
+**Token de cotation** : SOL, USDC, USDT ou tout autre jeton (paire memecoin) ; un résultat n'utilise qu'un seul token de
+cotation (le plus fréquent), les swaps cotés dans un autre sont écartés et comptés dans les limites.
+
+**Faux positifs traités** : une source partagée qui est un échange, un routeur, un compte de pourboire ou un wallet
+très actif est « non discriminante » ; les montants ronds (0,5 / 1 SOL…) ne comptent pas comme similitude ; les bots,
+routeurs et le créateur sont écartés de la cohorte et du jugement du volume ; la p-value de synchronie se compare à la
+distribution des achats de la fenêtre elle-même.
+
+**Données partielles** : chaque résultat porte sa `Coverage` (signatures complètes ou plafonnées, transactions lues /
+manquantes, analyse limitée aux plus anciennes). Une lacune devient une preuve `data_gap` NON VÉRIFIÉ et fait passer
+les calculs concernés en `estimated`.
+
+Collecte (gratuite, RPC public, lecture seule, jamais appelée par les tests) :
+
+```
+NODE_USE_ENV_PROXY=1 node --experimental-strip-types --no-warnings scripts/social/coordination-capture.ts <mint> <capture.json>
+node --experimental-strip-types --no-warnings scripts/social/coordination-reduce.ts <capture.json> <fixture.json>
+```
+
+Limites connues : pseudonymat (des wallets distincts peuvent avoir le même propriétaire, ou l'inverse) ; ordre
+inconnu à l'intérieur d'un slot ; montants en SOL approximatifs ; cycles de transferts recherchés jusqu'à 3 wallets ;
+aucun seuil du brouillon n'est calibré sur des lancements étiquetés ; l'historique gratuit est borné.
+
 ## Outcome Tracker V1 (`src/outcomes/`, `scripts/outcomes.ts`)
 
 Couche d'**observation** séparée : elle consomme les résultats du scanner et n'en modifie aucun. Rien de ce
