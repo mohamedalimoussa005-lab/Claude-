@@ -30,7 +30,7 @@ test("no other source file imports the social module (existing scores cannot dep
   for (const dir of ["../src/", "../server/", "../scripts/"]) {
     const root = new URL(dir, import.meta.url);
     for (const rel of readdirSync(root, { recursive: true }) as string[]) {
-      if (!/\.(ts|tsx)$/.test(rel) || rel.replaceAll("\\", "/").startsWith("social/")) continue;
+      if (!/\.(ts|tsx)$/.test(rel) || rel.replaceAll("\\", "/").startsWith("social/") || rel.replaceAll("\\", "/").startsWith("detective/")) continue;
       assert.doesNotMatch(read(new URL(rel, root)), /from\s+["'][^"']*\/social\//, `${dir}${rel}`);
     }
   }

@@ -15,3 +15,4 @@ vite.config.d.ts
 
 # Outcome Tracker runtime dataset (live observations, never committed)
 solana-scanner/data/outcomes/
+detective-reports/

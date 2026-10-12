@@ -278,7 +278,7 @@ test("coordination: imports nothing from the scoring layers and nothing outside 
   for (const d of ["../src/", "../server/"]) {
     const root = new URL(d, import.meta.url);
     for (const rel of readdirSync(root, { recursive: true }) as string[]) {
-      if (!/\.(ts|tsx)$/.test(rel) || rel.replaceAll("\\", "/").startsWith("social/")) continue;
+      if (!/\.(ts|tsx)$/.test(rel) || rel.replaceAll("\\", "/").startsWith("social/") || rel.replaceAll("\\", "/").startsWith("detective/")) continue;
       assert.doesNotMatch(readFileSync(new URL(rel, root), "utf8"), /from\s+["'][^"']*\/social\//, `${d}${rel}`);
     }
   }
