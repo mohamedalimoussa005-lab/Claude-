@@ -4,8 +4,11 @@
  *   observed   the swaps themselves
  *   computed   round trips (a wallet buys and sells the same tokens within a short time), repeated trade sizes,
  *              regular intervals, concentration, token transfer cycles
- *   statistical a label-permutation null model for the round-trip share: if wallets were exchangeable, how much
- *              round-trip volume would chance alone produce? (deterministic PRNG, stated seed)
+ *   motif       wallets that repeat BALANCED round trips (many matched buy/sell cycles whose totals are equal)
+ *
+ * There is deliberately no significance test here: buying and later selling is what traders do (the 5D audit showed
+ * a label-permutation test flags nearly every organic market). Measures are descriptive and carry their
+ * counter-explanations; a level of 30 % or a motif is a pointer for review, not an anomaly verdict.
  *
  * None of this proves that volume is fake: market makers, arbitrageurs and scalpers also trade both ways, and
  * known bots/routers are left out of the judgement (their volume is counted apart). The output is a measurement
@@ -15,7 +18,7 @@
 import type { CoordinationConfig, KnownEntity, SwapEvent } from "./model.ts";
 import { DEFAULT_CONFIG } from "./model.ts";
 import type { TokenTransfer } from "./normalize.ts";
-import { cv, prng, similar } from "./stats.ts";
+import { cv, similar } from "./stats.ts";
 
 export const WASH_COUNTER_EXPLANATIONS: readonly string[] = [
   "teneur de marché ou bot d'arbitrage qui achète et revend légitimement",
@@ -32,6 +35,15 @@ export interface RoundTrip {
   quoteBuy: bigint;
   quoteSell: bigint;
   seconds: number | null;
+}
+
+export interface MotifWallet {
+  wallet: string;
+  cycles: number;
+  boughtQuote: bigint;
+  soldQuote: bigint;
+  /** |bought − sold| / max(bought, sold). */
+  imbalance: number;
 }
 
 export interface WalletCadence {
@@ -57,7 +69,10 @@ export interface WashReport {
   roundTripQuote: bigint;
   roundTripShare: number | null;
   roundTripWallets: string[];
-  permutation: { permutations: number; observedShare: number; nullMean: number; nullP95: number; pValue: number; seed: number } | null;
+  /** Wallets repeating balanced round trips (market makers, arbitrage bots and wash trading all look like this). */
+  motifWallets: MotifWallet[];
+  /** Share of the judged volume traded by the motif wallets (0..1), or null without volume. */
+  motifVolumeShare: number | null;
   cadence: WalletCadence[];
   /** Directed cycles of exact token transfers among wallets (A→B→A, A→B→C→A). */
   transferCycles: string[][];
@@ -171,33 +186,23 @@ export function analyzeWash(args: WashArgs): WashReport {
   const rtVol = rts.reduce((a, r) => a + r.quoteBuy + r.quoteSell, 0n);
   const share = judgedQuote > 0n ? Number((rtVol * 1_000_000n) / judgedQuote) / 1_000_000 : null;
 
-  // null model: shuffle wallet labels over the judged swaps (multiset of labels preserved)
-  let permutation: WashReport["permutation"] = null;
-  if (judged.length >= 4 && share !== null) {
-    const rnd = prng(cfg.wash.seed);
-    const labels = judged.map((s) => s.trader);
-    const shares: number[] = [];
-    for (let p = 0; p < cfg.wash.permutations; p++) {
-      for (let i = labels.length - 1; i > 0; i--) {
-        const j = Math.floor(rnd() * (i + 1));
-        [labels[i], labels[j]] = [labels[j]!, labels[i]!];
-      }
-      const snap = [...labels];
-      const m = matchRoundTrips(judged, (i) => snap[i]!, cfg);
-      const v = m.reduce((a, r) => a + r.quoteBuy + r.quoteSell, 0n);
-      shares.push(judgedQuote > 0n ? Number((v * 1_000_000n) / judgedQuote) / 1_000_000 : 0);
-    }
-    shares.sort((a, b) => a - b);
-    const ge = shares.filter((x) => x >= share).length;
-    permutation = {
-      permutations: cfg.wash.permutations,
-      observedShare: share,
-      nullMean: shares.reduce((a, b) => a + b, 0) / shares.length,
-      nullP95: shares[Math.min(shares.length - 1, Math.floor(0.95 * shares.length))]!,
-      pValue: (ge + 1) / (cfg.wash.permutations + 1),
-      seed: cfg.wash.seed,
-    };
-  } else notes.push("trop peu de swaps pour le modèle nul de permutation");
+  // repeated balanced round trips per wallet (descriptive)
+  const rtBy = new Map<string, { cycles: number; buy: bigint; sell: bigint }>();
+  for (const r of rts) {
+    const e = rtBy.get(r.wallet) ?? { cycles: 0, buy: 0n, sell: 0n };
+    e.cycles++;
+    e.buy += r.quoteBuy;
+    e.sell += r.quoteSell;
+    rtBy.set(r.wallet, e);
+  }
+  const motifWallets: MotifWallet[] = [];
+  for (const [wallet, e] of [...rtBy].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+    const hi = e.buy > e.sell ? e.buy : e.sell;
+    if (e.cycles < cfg.wash.motifMinCycles || hi === 0n) continue;
+    const imbalance = Number((e.buy > e.sell ? e.buy - e.sell : e.sell - e.buy) * 1_000_000n / hi) / 1_000_000;
+    if (imbalance <= cfg.wash.motifBalanceTolerance) motifWallets.push({ wallet, cycles: e.cycles, boughtQuote: e.buy, soldQuote: e.sell, imbalance });
+  }
+  const motifVol = motifWallets.reduce((a, m) => a + (volBy.get(m.wallet) ?? 0n), 0n);
 
   // cadence per wallet
   const cadence: WalletCadence[] = [];
@@ -216,8 +221,8 @@ export function analyzeWash(args: WashArgs): WashReport {
 
   const cycles = findCycles(args.transfers);
   const flags: string[] = [];
-  if (share !== null && share >= cfg.wash.roundTripShareFlag) flags.push(`aller-retours = ${(share * 100).toFixed(1)} % du volume jugé (niveau de signalement ${cfg.wash.roundTripShareFlag * 100} %)`);
-  if (permutation && permutation.pValue < cfg.alpha && share !== null && share > 0) flags.push(`part d'aller-retours au-dessus du modèle nul (p=${permutation.pValue.toFixed(3)}, ${permutation.permutations} permutations)`);
+  if (share !== null && share >= cfg.wash.roundTripShareFlag) flags.push(`aller-retours = ${(share * 100).toFixed(1)} % du volume jugé (niveau de repérage ${cfg.wash.roundTripShareFlag * 100} %, non validé)`);
+  if (motifWallets.length > 0) flags.push(`${motifWallets.length} wallet(s) répètent des aller-retours équilibrés (≥ ${cfg.wash.motifMinCycles} cycles, écart ≤ ${cfg.wash.motifBalanceTolerance * 100} %): motif descriptif`);
   if (cadence.some((c) => c.metronomic)) flags.push(`${cadence.filter((c) => c.metronomic).length} wallet(s) à taille et rythme réguliers`);
   if (cycles.length > 0) flags.push(`${cycles.length} cycle(s) de transferts du token entre wallets`);
   if (excludedSwaps.length > 0) notes.push(`${excludedSwaps.length} swap(s) d'entités connues (routeurs, bots, services) exclus du jugement`);
@@ -236,7 +241,8 @@ export function analyzeWash(args: WashArgs): WashReport {
     roundTripQuote: rtVol,
     roundTripShare: share,
     roundTripWallets: [...new Set(rts.map((r) => r.wallet))].sort(),
-    permutation,
+    motifWallets,
+    motifVolumeShare: judgedQuote > 0n ? Number((motifVol * 1_000_000n) / judgedQuote) / 1_000_000 : null,
     cadence,
     transferCycles: cycles,
     flags,

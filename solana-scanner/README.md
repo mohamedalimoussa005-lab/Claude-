@@ -551,27 +551,28 @@ et, au plus, une hypothèse qui liste les explications ordinaires qu'elle n'excl
 | `cluster.ts` | familles de signaux (financement, timing, montant, sortie, transfert) et groupes |
 | `washVolume.ts` | aller-retours, tailles et rythmes réguliers, cycles de transferts, modèle nul par permutation |
 | `evidence.ts` | inscription au ledger (FAIT observé / INDICE calculé / HYPOTHÈSE / NON VÉRIFIÉ) |
+| `inference.ts` / `behaviour.ts` | inférence de groupes (permutation des liens de financement, sélection répétée) |
 | `risk.ts` | score de coordination **brouillon** (`draft-0`, `draft_unvalidated`) |
 
 **Séparation stricte des niveaux** : transactions et virements lus = `FAIT` (observed) ; comptages exacts sur données
 complètes = `FAIT` (computed) ; indices statistiques ou données partielles = `INDICE` (computed / estimated) ;
-interprétation = `HYPOTHÈSE` (estimated). Une HYPOTHÈSE n'est écrite que si **au moins trois familles** de signaux
+interprétation = `HYPOTHÈSE` (estimated). Une HYPOTHÈSE (désactivée par défaut) n'est écrite que si **au moins trois familles** de signaux
 indépendantes sont présentes **dont une autre que le financement et le timing** : un financement commun et des
 achats synchronisés ne suffisent jamais, même si le seuil est abaissé.
 
-**Modèles nuls (déterministes, graine fixe, réglables)** : (1) synchronie du lancement : Monte-Carlo contre la
-distribution des achats de la fenêtre elle-même (un slot ne pèse pas plus que le 90ᵉ centile des slots occupés) ;
-(2) aller-retours : permutation des étiquettes de wallets sur les swaps ; (3) groupes : chaque groupe est comparé au
-**reste de la cohorte** dont les familles sont mélangées indépendamment, et l'hypothèse exige p < alpha — un lancement
-« chaud », où tout se produit en même temps par défaut, ne donne donc jamais d'hypothèse.
+**Inférence statistique (5D, voir `docs/social-phase5d-statistics.md`)** : le comportement de chaque wallet est conservé comme une
+unité, seuls les liens de financement sont permutés, et la détection de groupes est rejouée à chaque tirage (p ajusté par
+statistique d'ordre). Les groupes purement comportementaux sont décrits sans p-value. La synchronie du lancement et les
+aller-retours n'ont plus de test de significativité (mesures descriptives). Le financement inconnu donne **UNKNOWN**, jamais un zéro.
+Les **hypothèses automatiques sont désactivées par défaut** (`hypotheses.enabled=false`). Le banc d'essai (`scripts/social/coordination-benchmark.ts`)
+est synthétique : il ne mesure aucun taux réel de manipulation.
 
 **Token de cotation** : SOL, USDC, USDT ou tout autre jeton (paire memecoin) ; un résultat n'utilise qu'un seul token de
 cotation (le plus fréquent), les swaps cotés dans un autre sont écartés et comptés dans les limites.
 
 **Faux positifs traités** : une source partagée qui est un échange, un routeur, un compte de pourboire ou un wallet
 très actif est « non discriminante » ; les montants ronds (0,5 / 1 SOL…) ne comptent pas comme similitude ; les bots,
-routeurs et le créateur sont écartés de la cohorte et du jugement du volume ; la p-value de synchronie se compare à la
-distribution des achats de la fenêtre elle-même.
+routeurs et le créateur sont écartés de la cohorte et du jugement du volume .
 
 **Données partielles** : chaque résultat porte sa `Coverage` (signatures complètes ou plafonnées, transactions lues /
 manquantes, analyse limitée aux plus anciennes). Une lacune devient une preuve `data_gap` NON VÉRIFIÉ et fait passer

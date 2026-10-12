@@ -16,17 +16,18 @@ export interface CoordinationFeatures {
   cohortSize: number;
   cohortSupplyShare: number | null;
   top5BuyShare: number | null;
-  syncUnusual: boolean | null;
-  /** Largest share of the traced cohort funded through one discriminating source. */
+  /** Share of traced wallets known to be funded through a discriminating shared source. A LOWER BOUND; null (UNKNOWN) when too few funding histories are complete. */
   sharedFundingShare: number | null;
+  /** Share of traced wallets whose funding relations are known (complete histories). */
+  fundingKnownShare: number | null;
   tracedWallets: number;
   /** Share of cohort wallets that sit in a multi-signal group. */
   multiSignalWalletShare: number | null;
-  /** Share of cohort wallets in a group that chance alone (rest of the cohort, shuffled families) would rarely produce (p < alpha). */
+  /** Share of cohort wallets in a group that is significant after family-wise adjustment; null (UNKNOWN) when the inference could not run. */
   significantGroupWalletShare: number | null;
   maxFamilies: number;
-  /** Round-trip share minus the 95th percentile of the permutation null; null if not computed. */
-  roundTripExcess: number | null;
+  /** Share of the judged volume traded by wallets repeating balanced round trips (descriptive; market makers look the same). */
+  motifVolumeShare: number | null;
   metronomicWallets: number;
   transferCycles: number;
 }
@@ -35,6 +36,8 @@ export function extractCoordinationFeatures(r: CoordinationResult): Coordination
   const cohort = r.launch.cohort.length;
   const traced = r.funding.wallets.length;
   const disc = r.funding.shared.filter((s) => s.discriminating);
+  const linked = new Set(disc.flatMap((s) => s.wallets)).size;
+  const fundingKnownShare = traced > 0 ? r.funding.knownCount / traced : 0;
   const inGroups = new Set(r.cluster.groups.filter((g) => g.strength === "multi_signal").flatMap((g) => g.wallets));
   const W = r.wash;
   return {
@@ -43,13 +46,13 @@ export function extractCoordinationFeatures(r: CoordinationResult): Coordination
     cohortSize: cohort,
     cohortSupplyShare: r.launch.cohortSupplyShare,
     top5BuyShare: r.launch.top5BuyShare,
-    syncUnusual: cohort >= 3 ? r.launch.sync.unusual : null,
-    sharedFundingShare: traced >= 3 && r.funding.unavailable.length < traced ? Math.max(0, ...disc.map((s) => s.cohortShare)) : null,
+    sharedFundingShare: fundingKnownShare >= COORDINATION_RISK_DRAFT.minFundingKnownShare && traced >= 3 ? linked / traced : null,
+    fundingKnownShare: traced > 0 ? fundingKnownShare : null,
     tracedWallets: traced,
     multiSignalWalletShare: cohort >= 3 ? inGroups.size / cohort : null,
-    significantGroupWalletShare: cohort >= 6 ? new Set(r.cluster.groups.filter((g) => g.strength === "multi_signal" && g.pValue !== null && g.pValue < 0.01).flatMap((g) => g.wallets)).size / cohort : null,
+    significantGroupWalletShare: r.cluster.inference.status === "ok" ? new Set(r.cluster.groups.filter((g) => g.significant).flatMap((g) => g.wallets)).size / Math.max(1, cohort) : null,
     maxFamilies: Math.max(0, ...r.cluster.groups.map((g) => g.families.length)),
-    roundTripExcess: W.roundTripShare !== null && W.permutation ? W.roundTripShare - W.permutation.nullP95 : null,
+    motifVolumeShare: W.motifVolumeShare,
     metronomicWallets: W.cadence.filter((c) => c.metronomic).length,
     transferCycles: W.transferCycles.length,
   };
@@ -62,7 +65,8 @@ export const COORDINATION_RISK_DRAFT = {
   supplyShareFullAt: 0.3,
   fundingShareFullAt: 0.5,
   groupShareFullAt: 0.4,
-  roundTripExcessFullAt: 0.3,
+  motifVolumeFullAt: 0.3,
+  minFundingKnownShare: 0.5,
   minComponents: 3,
   levels: { high: 60, medium: 30 },
 } as const;
@@ -95,27 +99,24 @@ export function scoreCoordinationRiskDraft(f: CoordinationFeatures, cfg = COORDI
   const c: CoordinationRiskComponent[] = [];
 
   if (f.cohortSize < 3 || f.cohortSupplyShare === null) c.push({ key: "launchConcentration", label: "Concentration au lancement", points: null, max: w.launchConcentration, note: f.cohortSize < 3 ? "moins de 3 acheteurs de cohorte" : "offre totale inconnue" });
-  else {
-    const base = clamp01(f.cohortSupplyShare / cfg.supplyShareFullAt) * 0.8 + (f.syncUnusual ? 0.2 : 0);
-    c.push({ key: "launchConcentration", label: "Concentration au lancement", points: r1(w.launchConcentration * clamp01(base)), max: w.launchConcentration, note: `cohorte = ${r1(f.cohortSupplyShare * 100)} % de l'offre${f.syncUnusual ? ", synchronie inhabituelle" : ""}${f.launchObserved ? "" : " (lancement non observé)"}` });
-  }
+  else c.push({ key: "launchConcentration", label: "Concentration au lancement", points: r1(w.launchConcentration * clamp01(f.cohortSupplyShare / cfg.supplyShareFullAt)), max: w.launchConcentration, note: `cohorte = ${r1(f.cohortSupplyShare * 100)} % de l'offre${f.launchObserved ? "" : " (lancement non observé)"}` });
 
   c.push(
     f.sharedFundingShare === null
-      ? { key: "sharedFunding", label: "Financement commun discriminant", points: null, max: w.sharedFunding, note: "financements non remontés pour assez de wallets" }
-      : { key: "sharedFunding", label: "Financement commun discriminant", points: r1(w.sharedFunding * clamp01(f.sharedFundingShare / cfg.fundingShareFullAt)), max: w.sharedFunding, note: `${r1(f.sharedFundingShare * 100)} % de la cohorte tracée partage une source non neutre` },
+      ? { key: "sharedFunding", label: "Financement commun discriminant", points: null, max: w.sharedFunding, note: `UNKNOWN: financement connu pour ${f.fundingKnownShare === null ? "aucun" : r1(f.fundingKnownShare * 100) + " %"} des wallets tracés (seuil ${cfg.minFundingKnownShare * 100} %)` }
+      : { key: "sharedFunding", label: "Financement commun discriminant", points: r1(w.sharedFunding * clamp01(f.sharedFundingShare / cfg.fundingShareFullAt)), max: w.sharedFunding, note: `au moins ${r1(f.sharedFundingShare * 100)} % de la cohorte tracée partage une source non neutre (borne inférieure)` },
   );
 
   c.push(
     f.significantGroupWalletShare === null
-      ? { key: "coordinatedGroups", label: "Groupes à signaux multiples", points: null, max: w.coordinatedGroups, note: "cohorte trop petite pour le modèle nul" }
-      : { key: "coordinatedGroups", label: "Groupes à signaux multiples", points: r1(w.coordinatedGroups * clamp01(f.significantGroupWalletShare / cfg.groupShareFullAt)), max: w.coordinatedGroups, note: `${r1(f.significantGroupWalletShare * 100)} % de la cohorte dans un groupe au-dessus du hasard (${r1((f.multiSignalWalletShare ?? 0) * 100)} % dans un groupe, significatif ou non; ${f.maxFamilies} familles au plus)` },
+      ? { key: "coordinatedGroups", label: "Groupes significatifs", points: null, max: w.coordinatedGroups, note: "UNKNOWN: inférence impossible (financement connu pour trop peu de wallets)" }
+      : { key: "coordinatedGroups", label: "Groupes significatifs", points: r1(w.coordinatedGroups * clamp01(f.significantGroupWalletShare / cfg.groupShareFullAt)), max: w.coordinatedGroups, note: `${r1(f.significantGroupWalletShare * 100)} % de la cohorte dans un groupe significatif après ajustement (${f.maxFamilies} familles au plus)` },
   );
 
-  if (f.roundTripExcess === null) c.push({ key: "volumePattern", label: "Motifs de volume", points: null, max: w.volumePattern, note: "volume non évalué" });
+  if (f.motifVolumeShare === null) c.push({ key: "volumePattern", label: "Motifs de volume", points: null, max: w.volumePattern, note: "volume non évalué" });
   else {
-    const raw = clamp01(Math.max(0, f.roundTripExcess) / cfg.roundTripExcessFullAt) * 0.7 + (f.metronomicWallets > 0 ? 0.15 : 0) + (f.transferCycles > 0 ? 0.15 : 0);
-    c.push({ key: "volumePattern", label: "Motifs de volume", points: r1(w.volumePattern * clamp01(raw)), max: w.volumePattern, note: `aller-retours ${f.roundTripExcess >= 0 ? "+" : ""}${r1(f.roundTripExcess * 100)} pts au-dessus du modèle nul, ${f.metronomicWallets} wallet(s) réguliers, ${f.transferCycles} cycle(s)` });
+    const raw = clamp01(f.motifVolumeShare / cfg.motifVolumeFullAt) * 0.7 + (f.metronomicWallets > 0 ? 0.15 : 0) + (f.transferCycles > 0 ? 0.15 : 0);
+    c.push({ key: "volumePattern", label: "Motifs de volume", points: r1(w.volumePattern * clamp01(raw)), max: w.volumePattern, note: `${r1(f.motifVolumeShare * 100)} % du volume par des wallets à aller-retours répétés équilibrés (teneurs de marché compris), ${f.metronomicWallets} wallet(s) réguliers, ${f.transferCycles} cycle(s)` });
   }
 
   const known = c.filter((x) => x.points !== null);

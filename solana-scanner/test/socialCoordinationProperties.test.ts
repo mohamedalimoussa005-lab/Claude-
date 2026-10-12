@@ -53,9 +53,18 @@ function invariants(r: CoordinationResult, label: string) {
   }
   const w = r.wash;
   if (w.roundTripShare !== null) assert.ok(w.roundTripShare >= 0 && w.roundTripShare <= 1.000001, `${label}: share ${w.roundTripShare}`);
-  if (w.permutation) assert.ok(w.permutation.pValue > 0 && w.permutation.pValue <= 1, label);
+  if (w.motifVolumeShare !== null) assert.ok(w.motifVolumeShare >= 0 && w.motifVolumeShare <= 1.000001, label);
   assert.ok(w.judgedQuote + w.excludedQuote === w.grossQuote, `${label}: volume split adds up`);
-  if (r.launch.sync.pValue !== null) assert.ok(r.launch.sync.pValue >= 0 && r.launch.sync.pValue <= 1, label);
+  assert.equal(r.launch.sync.calibrated, false, label);
+  const inf = r.cluster.inference;
+  assert.ok(["ok", "unknown", "not_applicable"].includes(inf.status), label);
+  if (inf.status !== "ok") assert.ok(inf.reason, `${label}: a non-ok inference says why`);
+  for (const g of r.cluster.groups) {
+    if (g.adjustedP !== null) assert.ok(inf.status === "ok" && g.adjustedP > 0 && g.adjustedP <= 1, label);
+    if (inf.status !== "ok") assert.ok(g.adjustedP === null && !g.significant, `${label}: no p-value without a valid inference`);
+    assert.equal(g.hypothesisEligible, false, `${label}: hypotheses are off by default`);
+  }
+  assert.ok(r.funding.knownCount + r.funding.unknownCount === r.funding.wallets.length, label);
   assert.ok(r.limits.some((l) => l.includes("aucune conclusion de fraude")), label);
   for (const s of r.funding.shared) {
     if (s.entity || s.probableService) assert.equal(s.discriminating, false, label);
@@ -84,7 +93,7 @@ test("property: shuffling the transactions never changes the result", () => {
     const s = randomScenario(seed);
     const a = analyzeCoordination(input(s));
     const b = analyzeCoordination(input({ ...s, txs: shuffle(s.txs, rng) }));
-    const view = (r: CoordinationResult) => JSON.stringify([r.launch.cohort.map((m) => [m.wallet, m.firstBuySlot]), r.cluster.groups.map((g) => [g.wallets, g.families]), r.funding.shared.map((x) => [x.source, x.wallets]), r.wash.roundTripShare, r.wash.permutation?.pValue, r.launch.sync.observedPairs]);
+    const view = (r: CoordinationResult) => JSON.stringify([r.launch.cohort.map((m) => [m.wallet, m.firstBuySlot]), r.cluster.groups.map((g) => [g.wallets, g.families]), r.funding.shared.map((x) => [x.source, x.wallets]), r.wash.roundTripShare, r.wash.motifWallets.length, r.cluster.inference.components.map((c) => [c.size, c.adjustedP]), r.launch.sync.observedPairs]);
     assert.equal(view(a), view(b), `seed ${seed}`);
   }
 });

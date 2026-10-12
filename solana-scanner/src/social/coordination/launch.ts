@@ -56,15 +56,19 @@ export interface LaunchReport {
   notes: string[];
 }
 
+/**
+ * Descriptive synchrony measure. There is NO p-value and no "unusual" verdict: the baseline is the launch's own
+ * arrival pattern, which contains whatever coordination is being looked for (5D audit), so it cannot calibrate a test.
+ */
 export interface SyncStat {
   cohortSize: number;
   /** Pairs of cohort wallets whose first buys are at most `syncSlots` apart. */
   observedPairs: number;
-  /** Mean close pairs over the baseline draws (buy slots drawn from the window's own distribution of buys). */
-  expectedPairs: number;
-  /** Monte-Carlo p-value: share of baseline draws with at least as many close pairs (add-one smoothed). */
-  pValue: number | null;
-  unusual: boolean;
+  /** Mean close pairs over baseline draws (buys drawn from the window's own arrival rate). Indicative reference only. */
+  baselineMeanPairs: number;
+  /** observedPairs / baselineMeanPairs (null if the baseline is 0). 1 = what the launch's own arrival pattern predicts. */
+  ratio: number | null;
+  calibrated: false;
 }
 
 export interface LaunchArgs {
@@ -87,7 +91,7 @@ export function analyzeLaunch(args: LaunchArgs): LaunchReport {
   if (!launchObserved) notes.push("historique incomplet: les premières transactions du token n'ont pas été atteintes, le lancement n'est pas observé");
   if (args.coverage.transactionsMissing > 0) notes.push(`${args.coverage.transactionsMissing} transaction(s) listée(s) mais non lue(s)`);
   if (all.length === 0) {
-    return { mint: args.mint, launchObserved, firstSlot: null, windowEndSlot: null, swapsInWindow: 0, buysInWindow: 0, cohort: [], creatorBuys: [], excluded: [], buyersFirstSlot: 0, buyersWithin5Slots: 0, cohortSupplyShare: null, cohortGrossBuyShare: null, top5BuyShare: null, hhiQuote: null, giniQuote: null, sync: { cohortSize: 0, observedPairs: 0, expectedPairs: 0, pValue: null, unusual: false }, coverage: args.coverage, notes: [...notes, "aucun swap lu"] };
+    return { mint: args.mint, launchObserved, firstSlot: null, windowEndSlot: null, swapsInWindow: 0, buysInWindow: 0, cohort: [], creatorBuys: [], excluded: [], buyersFirstSlot: 0, buyersWithin5Slots: 0, cohortSupplyShare: null, cohortGrossBuyShare: null, top5BuyShare: null, hhiQuote: null, giniQuote: null, sync: { cohortSize: 0, observedPairs: 0, baselineMeanPairs: 0, ratio: null, calibrated: false }, coverage: args.coverage, notes: [...notes, "aucun swap lu"] };
   }
   const firstSlot = all[0]!.slot;
   const windowEnd = firstSlot + cfg.launch.windowSlots;
@@ -161,12 +165,9 @@ export function analyzeLaunch(args: LaunchArgs): LaunchReport {
 }
 
 /**
- * Close-in-time (±syncSlots) first buys among cohort wallets vs a Monte-Carlo baseline: the same number of buyers
- * is drawn `simulations` times with a fixed seed. The baseline is the window's own arrival rate at a coarse scale:
- * a buy is drawn at random, then placed uniformly inside its `baselineBinSlots`-slot bin — so a hot launch is
- * compared with itself, but a spike confined to one slot cannot hide inside its own baseline. Pairs are counted
- * exactly in each draw, so the dependence between pairs (one crowded slot makes many pairs) is respected. A slot
- * weighs at most the 90th percentile of occupied slots in the baseline.
+ * Close-in-time (±syncSlots) first buys among cohort wallets, with an indicative baseline: the same number of buyers
+ * is drawn `simulations` times (fixed seed) from the window's own arrival rate at a coarse scale (bins of
+ * `baselineBinSlots`, a slot weighing at most the 90th percentile of occupied slots). Descriptive only.
  */
 export function syncStat(cohort: readonly CohortMember[], windowBuys: readonly SwapEvent[], cfg: CoordinationConfig): SyncStat {
   const n = cohort.length;
@@ -178,9 +179,7 @@ export function syncStat(cohort: readonly CohortMember[], windowBuys: readonly S
     return c;
   };
   const observed = closePairs(cohort.map((m) => m.firstBuySlot));
-  if (n < 2 || windowBuys.length === 0) return { cohortSize: n, observedPairs: observed, expectedPairs: 0, pValue: null, unusual: false };
-  // robust baseline: a slot cannot weigh more than the 90th percentile of occupied slots (so one crowded slot —
-  // possibly the very thing being tested — does not dominate its own baseline)
+  if (n < 2 || windowBuys.length === 0) return { cohortSize: n, observedPairs: observed, baselineMeanPairs: 0, ratio: null, calibrated: false };
   const perSlot = new Map<number, number>();
   for (const b of windowBuys) perSlot.set(b.slot, (perSlot.get(b.slot) ?? 0) + 1);
   const counts = [...perSlot.values()].sort((a, b) => a - b);
@@ -188,19 +187,15 @@ export function syncStat(cohort: readonly CohortMember[], windowBuys: readonly S
   const base: number[] = [];
   for (const [slot, c] of perSlot) for (let k = 0; k < Math.min(c, cap); k++) base.push(slot);
   const bin = cfg.launch.baselineBinSlots;
-  const rnd = prng(cfg.wash.seed + 17);
+  const rnd = prng(cfg.seed + 17);
   let sum = 0;
-  let ge = 0;
   for (let r = 0; r < cfg.launch.simulations; r++) {
     const draw = Array.from({ length: n }, () => {
       const slot = base[Math.floor(rnd() * base.length)]!;
-      const lo = Math.floor(slot / bin) * bin;
-      return lo + Math.floor(rnd() * bin);
+      return Math.floor(slot / bin) * bin + Math.floor(rnd() * bin);
     });
-    const c = closePairs(draw);
-    sum += c;
-    if (c >= observed) ge++;
+    sum += closePairs(draw);
   }
-  const p = (ge + 1) / (cfg.launch.simulations + 1);
-  return { cohortSize: n, observedPairs: observed, expectedPairs: sum / cfg.launch.simulations, pValue: p, unusual: observed > 0 && p < cfg.alpha };
+  const mean = sum / cfg.launch.simulations;
+  return { cohortSize: n, observedPairs: observed, baselineMeanPairs: mean, ratio: mean > 0 ? observed / mean : null, calibrated: false };
 }

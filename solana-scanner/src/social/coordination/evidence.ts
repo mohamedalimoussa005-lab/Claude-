@@ -60,6 +60,7 @@ export function recordCoordinationEvidence(a: CoordinationEvidenceArgs): Coordin
   if (r.coverage.transactionsMissing > 0) gap(`${r.coverage.transactionsMissing} transaction(s) listée(s) mais non obtenue(s)`, ["contenu de ces transactions (erreur RPC ou historique élagué)"]);
   if (r.funding.notTraced.length > 0) gap(`${r.funding.notTraced.length} wallet(s) de la cohorte non remontés (plafond de remontée)`, ["financement de ces wallets"], r.funding.notTraced.slice(0, 20));
   if (r.funding.unavailable.length > 0) gap(`${r.funding.unavailable.length} wallet(s) sans historique de financement disponible`, ["historique de ces wallets"], r.funding.unavailable.slice(0, 20));
+  if (r.cluster.inference.status !== "ok" && r.cluster.inference.reason) gap(`Inférence sur les groupes impossible: ${r.cluster.inference.reason}`, ["financement connu (historiques complets) pour assez de wallets"]);
   const cn = r.funding.notes.find((n) => n.startsWith("historique du créateur"));
   if (cn) gap(`Financement du créateur non établi: ${cn}`, ["premier financement du créateur", "financeurs du créateur"], r.funding.creatorChain.slice(0, 1));
   const partialWallets = r.funding.wallets.filter((w) => w.partial);
@@ -117,9 +118,9 @@ export function recordCoordinationEvidence(a: CoordinationEvidenceArgs): Coordin
           f("hhiQuote", r4(L.hhiQuote)),
           f("giniQuote", r4(L.giniQuote)),
           f("syncPairsObserved", s.observedPairs),
-          f("syncPairsExpected", r4(s.expectedPairs)),
-          f("syncPValue", r4(s.pValue)),
-          f("syncUnusual", s.unusual),
+          f("syncBaselineMeanPairs", r4(s.baselineMeanPairs)),
+          f("syncRatioToBaseline", r4(s.ratio)),
+          f("syncCalibrated", false),
           f("creatorBuys", L.creatorBuys.length),
           f("excludedEntities", L.excluded.length),
         ],
@@ -127,7 +128,7 @@ export function recordCoordinationEvidence(a: CoordinationEvidenceArgs): Coordin
         slot: L.firstSlot,
         basedOn: anchors,
         limits: [
-          "indice statistique: p-value Monte-Carlo contre la distribution des achats de la fenêtre elle-même (graine fixe)",
+          "mesure descriptive: la référence de synchronie est le rythme d'arrivée du lancement lui-même, aucune p-value n'est produite (audit 5D)",
           "un lancement populaire concentre naturellement les achats dans les premiers slots",
           ...L.notes,
         ],
@@ -245,11 +246,11 @@ export function recordCoordinationEvidence(a: CoordinationEvidenceArgs): Coordin
       status: "INDICATION",
       derivation: partial ? "estimated" : "computed",
       summary: `${g.wallets.length} wallets partagent ${g.families.length} signal(aux) (${g.families.join(", ")})${g.strength === "single_signal" ? " — un seul signal" : ""}`,
-      facts: [f("groupId", g.id), f("wallets", g.wallets.length), f("families", g.families.join(",")), f("strength", g.strength), f("baseShare", r4(g.baseShare)), f("pValueVsRestOfCohort", r4(g.pValue)), f("hypothesisEligible", g.hypothesisEligible)],
+      facts: [f("groupId", g.id), f("wallets", g.wallets.length), f("families", g.families.join(",")), f("strength", g.strength), f("baseShare", r4(g.baseShare)), f("inference", g.inference), f("adjustedP", r4(g.adjustedP)), f("significant", g.significant), f("hypothesisEligible", g.hypothesisEligible)],
       observedAt,
       addresses: g.wallets.slice(0, 20),
       basedOn: basis,
-      limits: [`explications ordinaires non exclues: ${g.counterExplanations.join(" ; ")}`, "ces similitudes décrivent des comportements, pas l'identité ni l'intention des propriétaires"],
+      limits: [`explications ordinaires non exclues: ${g.counterExplanations.join(" ; ")}`, "ces similitudes décrivent des comportements, pas l'identité ni l'intention des propriétaires", g.inference === "ok" ? `p ajusté (famille de tests, méthode: ${r.cluster.inference.method}): validé sur des benchmarks synthétiques seulement, jamais sur des cas réels étiquetés` : `aucune p-value (inférence: ${g.inference}${r.cluster.inference.reason ? ` — ${r.cluster.inference.reason}` : ""})`, ...(g.hypothesisBlockedBy ? [`aucune hypothèse écrite: ${g.hypothesisBlockedBy}`] : [])],
     }).id;
     out.groups.push(gid);
     if (g.hypothesisEligible) {
@@ -294,16 +295,16 @@ export function recordCoordinationEvidence(a: CoordinationEvidenceArgs): Coordin
           f("roundTripShare", r4(W.roundTripShare)),
           f("roundTripWallets", W.roundTripWallets.length),
           f("top5VolumeShare", r4(W.top5VolumeShare)),
-          f("nullMeanShare", r4(W.permutation?.nullMean ?? null)),
-          f("nullP95Share", r4(W.permutation?.nullP95 ?? null)),
-          f("permutationPValue", r4(W.permutation?.pValue ?? null)),
+          f("motifWallets", W.motifWallets.length),
+          f("motifVolumeShare", r4(W.motifVolumeShare)),
+          f("creatorVolumeShare", r4(W.creatorVolumeShare)),
           f("metronomicWallets", W.cadence.filter((c) => c.metronomic).length),
           f("transferCycles", W.transferCycles.length),
           f("flags", W.flags.length),
         ],
         observedAt,
         basedOn: swapAnchor,
-        limits: [...W.counterExplanations, "indicateur de mesure: aucun seuil n'est validé sur des cas étiquetés", ...W.notes],
+        limits: [...W.counterExplanations, "mesure descriptive: aucun test de significativité (acheter puis revendre est un comportement ordinaire) et aucun seuil validé sur des cas étiquetés", ...W.notes],
       }).id;
     }
   }

@@ -32,24 +32,31 @@ function bundle(n: number, o: { fund?: boolean; sameSlot?: boolean; amount?: (i:
 
 // ---------------------------------------------------------------- clustering
 
-test("cluster: funding + timing + amount + exit together form a group eligible for a (never proven) hypothesis", () => {
+test("cluster: funding + timing + amount + exit form a significant group; a hypothesis exists only if enabled by configuration", () => {
   const b = bundle(8, { sellAfter: 100 });
   const org = organicLaunch(prng(11), 30);
-  const r = run([...org.swaps, ...b.swaps], mapProvider({ ...b.map, ...Object.fromEntries(org.wallets.map((w, i) => [w, [{ from: addr(`f${i}`), lamports: SOL, slot: 5, n: 30_000 + i }]])), [FUNDER]: [] }));
+  const prov = mapProvider({ ...b.map, ...Object.fromEntries(org.wallets.map((w, i) => [w, [{ from: addr(`f${i}`), lamports: SOL, slot: 5, n: 30_000 + i }]])), [FUNDER]: [] });
+  const r = run([...org.swaps, ...b.swaps], prov);
   const g = r.cluster.groups.find((x) => x.strength === "multi_signal")!;
   assert.ok(g, "a multi-signal group is found");
   assert.ok(g.wallets.length >= 8 && b.wallets.every((w) => g.wallets.includes(w)));
   assert.ok(["funding", "timing", "amount", "exit"].every((f) => (g.families as string[]).includes(f)));
-  assert.equal(g.hypothesisEligible, true);
+  assert.equal(r.cluster.inference.status, "ok");
+  assert.equal(g.significant, true, `adjusted p=${g.adjustedP}`);
   assert.ok(g.counterExplanations.length >= 4);
   assert.ok(g.anchors.length > 0);
+  // priority 0: no hypothesis by default, whatever the statistics say
+  assert.equal(g.hypothesisEligible, false);
+  assert.match(g.hypothesisBlockedBy!, /désactivées par configuration/);
+  const on = run([...org.swaps, ...b.swaps], prov, { cfg: withConfig({ hypotheses: { enabled: true } }) });
+  assert.equal(on.cluster.groups.find((x) => x.strength === "multi_signal")!.hypothesisEligible, true);
 });
 
 test("cluster: funding + timing alone never make a hypothesis, even if the family threshold is lowered", () => {
   // different amounts (not similar) and no coordinated exit: only funding and timing remain
   const b = bundle(6, { amount: (i) => BigInt(300_000_000 + i * 170_000_000) });
   const provider = mapProvider({ ...b.map, [FUNDER]: [] });
-  for (const cfg of [DEFAULT_CONFIG, withConfig({ cluster: { minFamiliesForHypothesis: 2 } })]) {
+  for (const cfg of [withConfig({ hypotheses: { enabled: true } }), withConfig({ hypotheses: { enabled: true }, cluster: { minFamiliesForHypothesis: 2 } })]) {
     const r = run(b.swaps, provider, { cfg });
     const g = r.cluster.groups.find((x) => x.strength === "multi_signal");
     assert.ok(g, "funding+timing is reported as a multi-signal group");
@@ -164,16 +171,30 @@ function organicTrading(seed: number, wallets = 60) {
 }
 
 test("wash: organic trading shows little round-trip volume and no flag", () => {
-  let flagged = 0;
   for (let seed = 1; seed <= 12; seed++) {
     const r = analyzeWash({ swaps: organicTrading(seed), transfers: [], entities: ents });
     assert.ok(r.roundTripShare !== null && r.roundTripShare < 0.1, `round trip share ${r.roundTripShare}`);
-    if (r.flags.length > 0) flagged++;
+    assert.equal(r.flags.length, 0, `seed ${seed}: ${r.flags.join("; ")}`);
+    assert.equal(r.motifWallets.length, 0);
   }
-  assert.ok(flagged <= 1, `${flagged}/12 organic markets flagged`);
 });
 
-test("wash: repeated same-size buy/sell cycles by a few wallets are measured and flagged", () => {
+test("wash: a simple buy followed by a sell is never an anomaly, and there is no significance test", () => {
+  // everybody buys then sells back within the window: normal market behaviour, no motif, no verdict
+  const swaps: SwapEvent[] = [];
+  let n = 990_000;
+  for (let i = 0; i < 40; i++) {
+    swaps.push(swapEvent(n++, BASE_SLOT + i * 7, addr(`scalper${i}`), "buy", 1_000_000n, BigInt(0.2e9 + i * 17e6)));
+    swaps.push(swapEvent(n++, BASE_SLOT + i * 7 + 40, addr(`scalper${i}`), "sell", 1_000_000n, BigInt(0.19e9 + i * 17e6)));
+  }
+  const r = analyzeWash({ swaps, transfers: [], entities: ents });
+  assert.ok(r.roundTripShare! > 0.9, "the descriptive share is high…");
+  assert.equal(r.motifWallets.length, 0, "…but one round trip per wallet is not a repeated motif");
+  assert.ok(!("permutation" in r), "the old permutation test is gone");
+  assert.ok(r.flags.every((f) => !/anormal|au-dessus du modèle/i.test(f)));
+});
+
+test("wash: repeated balanced round trips by a few wallets form a descriptive motif", () => {
   const swaps = [...organicTrading(3, 40)];
   let n = 900_000;
   const loopers = [addr("loop-a"), addr("loop-b"), addr("loop-c")];
@@ -187,11 +208,23 @@ test("wash: repeated same-size buy/sell cycles by a few wallets are measured and
   const r = analyzeWash({ swaps, transfers: [], entities: ents });
   assert.ok(r.roundTripShare! > 0.4, `share ${r.roundTripShare}`);
   assert.ok(r.roundTripWallets.includes(loopers[0]!));
-  assert.ok(r.permutation!.pValue < 0.01, `p=${r.permutation!.pValue}`);
-  assert.ok(r.permutation!.observedShare > r.permutation!.nullP95);
+  assert.deepEqual(r.motifWallets.map((m) => m.wallet).sort(), [...loopers].sort());
+  assert.ok(r.motifWallets.every((m) => m.cycles === 25 && m.imbalance < 0.01));
+  assert.ok(r.motifVolumeShare! > 0.4);
   assert.equal(r.cadence.filter((c) => c.metronomic).length, 3);
-  assert.ok(r.flags.length >= 2);
-  assert.ok(r.counterExplanations.length > 0);
+  assert.ok(r.flags.some((f) => f.includes("motif descriptif")));
+  assert.ok(r.counterExplanations.some((c) => c.includes("teneur de marché")));
+});
+
+test("wash: a large, unbalanced wallet is not a motif (sells half of what it buys)", () => {
+  const w = addr("unbalanced");
+  const swaps: SwapEvent[] = [];
+  let n = 970_100;
+  for (let k = 0; k < 8; k++) {
+    swaps.push(swapEvent(n++, BASE_SLOT + k * 100, w, "buy", 1_000_000n, SOL));
+    swaps.push(swapEvent(n++, BASE_SLOT + k * 100 + 50, w, "sell", 1_000_000n, SOL / 2n));
+  }
+  assert.equal(analyzeWash({ swaps, transfers: [], entities: ents }).motifWallets.length, 0);
 });
 
 test("wash (false positive): a known arbitrage bot or router is excluded from the judgement and counted apart", () => {
@@ -236,20 +269,11 @@ test("wash: token transfer cycles (A→B→A, X→Y→Z→X) are found; a chain 
   assert.equal(chain.transferCycles.length, 0);
 });
 
-test("wash: permutation null model is deterministic for a seed and configurable", () => {
+test("wash: results are deterministic and independent of swap order", () => {
   const sw = organicTrading(5, 40);
   const a = analyzeWash({ swaps: sw, transfers: [], entities: ents });
   const b = analyzeWash({ swaps: [...sw].reverse(), transfers: [], entities: ents });
-  assert.deepEqual(a.permutation, b.permutation);
-  const c = analyzeWash({ swaps: sw, transfers: [], entities: ents, cfg: withConfig({ wash: { permutations: 50, seed: 9 } }) });
-  assert.equal(c.permutation!.permutations, 50);
-  assert.equal(c.permutation!.seed, 9);
-});
-
-test("wash: too few swaps skips the null model and says so", () => {
-  const r = analyzeWash({ swaps: [swapEvent(1, BASE_SLOT, addr(1), "buy", 1n, SOL)], transfers: [], entities: ents });
-  assert.equal(r.permutation, null);
-  assert.ok(r.notes.some((n) => n.includes("trop peu")));
+  assert.deepEqual([a.roundTripShare, a.motifWallets, a.top5VolumeShare], [b.roundTripShare, b.motifWallets, b.top5VolumeShare]);
   assert.equal(analyzeWash({ swaps: [], transfers: [], entities: ents }).roundTripShare, null);
 });
 
@@ -270,8 +294,7 @@ test("wash: the creator is NOT excluded from the volume judgement (they can trad
   assert.equal(analyzeWash({ swaps, transfers: [], entities: ents }).creatorVolumeShare, null, "no creator known → no share");
 });
 
-test("cluster (hot launch): when everything co-occurs by default, groups are described but no hypothesis is written", () => {
-  // 40 wallets, all buying in the same 3 slots with very similar non-round amounts, all selling together
+test("cluster (hot launch): when everything co-occurs and shares a funder, groups are described but nothing is significant", () => {
   const swaps: SwapEvent[] = [];
   const map: Record<string, { from: string; lamports: bigint; slot: number; n: number }[]> = {};
   for (let i = 0; i < 40; i++) {
@@ -281,32 +304,48 @@ test("cluster (hot launch): when everything co-occurs by default, groups are des
     swaps.push(swapEvent(81_000 + i, BASE_SLOT + 100 + (i % 2), w, "sell", q * 1000n, q));
     map[w] = [{ from: FUNDER, lamports: SOL, slot: 10 + i, n: 82_000 + i }];
   }
-  const r = run(swaps, mapProvider({ ...map, [FUNDER]: [] }));
+  const r = run(swaps, mapProvider({ ...map, [FUNDER]: [] }), { cfg: withConfig({ hypotheses: { enabled: true } }) });
   assert.ok(r.cluster.groups.length > 0, "the co-occurrence is described");
-  assert.ok(r.cluster.groups.every((g) => !g.hypothesisEligible), "…but it is what the launch does by default: no hypothesis");
-  assert.ok(r.cluster.notes.some((n) => n.includes("pas d'hypothèse")));
-  assert.equal(r.cluster.excess?.significant, false);
+  assert.ok(r.cluster.groups.every((g) => !g.significant && !g.hypothesisEligible), "everyone shares the funder: permuting funding changes nothing");
 });
 
-test("cluster: a bundle hidden among organic wallets is significant against the REST of the cohort; each group carries its p-value", () => {
+test("cluster: a bundle hidden among organic wallets gets a small family-wise adjusted p; adjusted p-values never decrease with rank", () => {
   const b = bundle(8, { sellAfter: 100 });
   const o = organicLaunch(prng(11), 30);
   const prov = mapProvider({ ...b.map, [FUNDER]: [], ...Object.fromEntries(o.wallets.map((w, i) => [w, [{ from: addr(`h${i}`), lamports: SOL, slot: 5, n: 83_000 + i }]])) });
   const r = run([...o.swaps, ...b.swaps], prov);
   const g = r.cluster.groups.find((x) => x.strength === "multi_signal")!;
-  assert.ok(g.pValue !== null && g.pValue < DEFAULT_CONFIG.alpha, `p=${g.pValue}`);
-  assert.equal(g.hypothesisEligible, true);
+  assert.ok(g.adjustedP !== null && g.adjustedP < DEFAULT_CONFIG.alpha, `p=${g.adjustedP}`);
+  const ps = r.cluster.inference.components.filter((c) => c.adjustedP !== null).map((c) => c.adjustedP!);
+  for (let i = 1; i < ps.length; i++) assert.ok(ps[i]! >= ps[i - 1]!);
   // permutations are configurable and the smoothed p-value cannot go below 1/(R+1)
-  const r2 = run([...o.swaps, ...b.swaps], prov, { cfg: withConfig({ cluster: { permutations: 50 } }) });
-  assert.ok(r2.cluster.groups[0]!.pValue! >= 1 / 51 - 1e-12);
+  const r2 = run([...o.swaps, ...b.swaps], prov, { cfg: withConfig({ cluster: { permutations: 150 } }) });
+  assert.ok(r2.cluster.groups[0]!.adjustedP! >= 1 / 151 - 1e-12);
+  // too few permutations for the alpha level: UNKNOWN rather than a p-value that can never be significant
+  const r3 = run([...o.swaps, ...b.swaps], prov, { cfg: withConfig({ cluster: { permutations: 50 } }) });
+  assert.equal(r3.cluster.inference.status, "unknown");
 });
 
-test("cluster: a cohort too small for a null model never gets a hypothesis, and says so", () => {
+test("cluster: too few KNOWN funding histories → UNKNOWN, never a p-value and never 'no link'", () => {
+  const b = bundle(8, { sellAfter: 100 });
+  const o = organicLaunch(prng(11), 30);
+  const base = mapProvider({ ...b.map, [FUNDER]: [], ...Object.fromEntries(o.wallets.map((w, i) => [w, [{ from: addr(`h${i}`), lamports: SOL, slot: 5, n: 83_000 + i }]])) });
+  // 60 % of the cohort has only partial histories in which nothing was found
+  const partialSet = new Set([...o.wallets.slice(0, 20), ...b.wallets.slice(0, 2)]);
+  const prov: typeof base = (w) => { const h = base(w); return h && partialSet.has(w) ? { ...h, inbound: [], coverage: { ...h.coverage, signaturesComplete: false } } : h; };
+  const r = run([...o.swaps, ...b.swaps], prov);
+  assert.equal(r.cluster.inference.status, "unknown");
+  assert.match(r.cluster.inference.reason!, /l'absence de lien n'est pas établie/);
+  assert.ok(r.cluster.groups.every((g) => g.adjustedP === null && !g.significant && g.inference === "unknown"));
+  assert.ok(r.cluster.notes.some((n) => n.includes("UNKNOWN")));
+  assert.equal(r.funding.unknownCount, 22);
+});
+
+test("cluster: a cohort too small for any test is NOT_APPLICABLE or UNKNOWN, with a reason", () => {
   const b = bundle(5, { sellAfter: 100 });
   const r = run(b.swaps, mapProvider({ ...b.map, [FUNDER]: [] }));
-  assert.equal(r.cluster.excess, null);
+  assert.notEqual(r.cluster.inference.status, "ok");
+  assert.ok(r.cluster.inference.reason);
   const g = r.cluster.groups.find((x) => x.strength === "multi_signal");
-  assert.ok(g && g.families.length >= 3 && g.pValue === null);
-  assert.equal(g!.hypothesisEligible, false);
-  assert.ok(r.cluster.notes.some((n) => n.includes("trop petite")));
+  assert.ok(g && g.adjustedP === null && g.hypothesisEligible === false);
 });

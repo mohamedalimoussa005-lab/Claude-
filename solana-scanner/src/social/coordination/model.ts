@@ -37,7 +37,7 @@ export interface CoordinationConfig {
     minBuyQuote: Record<string, bigint>;
     /** Minimum for a quote mint not listed above (0 = any positive amount). */
     minBuyQuoteDefault: bigint;
-    /** Monte-Carlo draws for the synchrony p-value (deterministic seed from `wash.seed`). */
+    /** Monte-Carlo draws for the descriptive synchrony baseline (deterministic seed from `seed`). */
     simulations: number;
     /** Width (in slots) of the bins that give the arrival-rate baseline; buys are spread uniformly inside a bin so a one-slot spike cannot hide itself. */
     baselineBinSlots: number;
@@ -53,8 +53,19 @@ export interface CoordinationConfig {
     minFamiliesForMulti: number;
     /** Families needed (at least one outside funding/timing) before a coordination hypothesis is written. */
     minFamiliesForHypothesis: number;
-    /** Permutations for the null model of multi-family pairs (families shuffled independently). */
+    /** Permutations of the funding-relation null model (see inference.ts). */
     permutations: number;
+  };
+  /** Statistical inference on groups (5D). Behaviour is held fixed, funding relations are permuted. */
+  inference: {
+    /** A group test needs at least this many cohort wallets whose funding is KNOWN (complete history). */
+    minKnownWallets: number;
+    /** ...and at least this share of the traced cohort; below either, the answer is UNKNOWN, never "no link". */
+    minKnownShare: number;
+  };
+  /** Automatic coordination HYPOTHESES. Off by default: the group tests have not passed the benchmark in every regime. */
+  hypotheses: {
+    enabled: boolean;
   };
   wash: {
     /** A buy and a later sell by the same wallet within this many seconds form a round trip. */
@@ -71,19 +82,25 @@ export interface CoordinationConfig {
     intervalCvFlag: number;
     /** Round trips above this share of gross volume are flagged (a measured level, not a validated threshold). */
     roundTripShareFlag: number;
-    /** Label-permutation null model: number of draws and PRNG seed (deterministic). */
-    permutations: number;
-    seed: number;
+    /** A wallet shows a "repeated balanced round-trip motif" with at least this many matched round trips... */
+    motifMinCycles: number;
+    /** ...whose total bought and sold quote amounts differ by at most this fraction. */
+    motifBalanceTolerance: number;
   };
-  /** p-values below this are reported as statistically unusual (still only an indication). */
+  /** Seed of every deterministic pseudo-random draw (descriptive baselines and permutation tests). */
+  seed: number;
+  /** Adjusted p-values below this mark a group as statistically significant (family-wise level). */
   alpha: number;
 }
 
 export const DEFAULT_CONFIG: CoordinationConfig = {
   funding: { maxHops: 2, maxWallets: 50, minFundingLamports: 10_000_000n, similarAmountTolerance: 0.05, burstSeconds: 600, serviceFanout: 100, serviceActivityCap: 1000 },
   launch: { cohortSize: 50, windowSlots: 150, syncSlots: 1, minBuyQuote: { [WSOL_MINT]: 1_000_000n, [USDC_MINT]: 10_000n, [USDT_MINT]: 10_000n }, minBuyQuoteDefault: 0n, simulations: 500, baselineBinSlots: 10 },
-  cluster: { amountTolerance: 0.05, exitSyncSlots: 2, minGroupSize: 3, minFamiliesForMulti: 2, minFamiliesForHypothesis: 3, permutations: 200 },
-  wash: { roundTripSeconds: 600, matchMinFraction: 0.8, sizeTolerance: 0.01, minTradesForRegularity: 4, repeatShareFlag: 0.8, intervalCvFlag: 0.25, roundTripShareFlag: 0.3, permutations: 200, seed: 20260101 },
+  cluster: { amountTolerance: 0.05, exitSyncSlots: 2, minGroupSize: 3, minFamiliesForMulti: 2, minFamiliesForHypothesis: 3, permutations: 500 },
+  inference: { minKnownWallets: 12, minKnownShare: 0.5 },
+  hypotheses: { enabled: false },
+  wash: { roundTripSeconds: 600, matchMinFraction: 0.8, sizeTolerance: 0.01, minTradesForRegularity: 4, repeatShareFlag: 0.8, intervalCvFlag: 0.25, roundTripShareFlag: 0.3, motifMinCycles: 5, motifBalanceTolerance: 0.02 },
+  seed: 20260101,
   alpha: 0.01,
 };
 
@@ -110,14 +127,15 @@ export function validateConfig(c: CoordinationConfig): void {
   pos(c.funding.burstSeconds, "funding.burstSeconds");
   pos(c.launch.cohortSize, "launch.cohortSize");
   pos(c.launch.windowSlots, "launch.windowSlots");
-  pos(c.wash.permutations, "wash.permutations");
+  pos(c.wash.motifMinCycles, "wash.motifMinCycles");
+  pos(c.inference.minKnownWallets, "inference.minKnownWallets");
   pos(c.launch.simulations, "launch.simulations");
   pos(c.launch.baselineBinSlots, "launch.baselineBinSlots");
   pos(c.cluster.permutations, "cluster.permutations");
   pos(c.cluster.minGroupSize, "cluster.minGroupSize");
   pos(c.cluster.minFamiliesForMulti, "cluster.minFamiliesForMulti");
   pos(c.cluster.minFamiliesForHypothesis, "cluster.minFamiliesForHypothesis");
-  for (const [v, n] of [[c.funding.similarAmountTolerance, "funding.similarAmountTolerance"], [c.cluster.amountTolerance, "cluster.amountTolerance"], [c.wash.sizeTolerance, "wash.sizeTolerance"], [c.wash.matchMinFraction, "wash.matchMinFraction"], [c.wash.repeatShareFlag, "wash.repeatShareFlag"], [c.wash.roundTripShareFlag, "wash.roundTripShareFlag"], [c.alpha, "alpha"]] as const) {
+  for (const [v, n] of [[c.funding.similarAmountTolerance, "funding.similarAmountTolerance"], [c.cluster.amountTolerance, "cluster.amountTolerance"], [c.wash.sizeTolerance, "wash.sizeTolerance"], [c.wash.matchMinFraction, "wash.matchMinFraction"], [c.wash.repeatShareFlag, "wash.repeatShareFlag"], [c.wash.roundTripShareFlag, "wash.roundTripShareFlag"], [c.wash.motifBalanceTolerance, "wash.motifBalanceTolerance"], [c.inference.minKnownShare, "inference.minKnownShare"], [c.alpha, "alpha"]] as const) {
     if (!Number.isFinite(v) || v < 0 || v > 1) throw new RangeError(`config ${n} must be within [0,1]`);
   }
   if (c.cluster.minFamiliesForHypothesis < c.cluster.minFamiliesForMulti) throw new RangeError("config minFamiliesForHypothesis must be >= minFamiliesForMulti");

@@ -18,7 +18,12 @@ import { DEFAULT_CONFIG } from "./model.ts";
 import type { CohortMember } from "./launch.ts";
 import type { FundingReport } from "./funding.ts";
 import type { TokenTransfer } from "./normalize.ts";
-import { prng, similar } from "./stats.ts";
+import { isRoundAmount } from "./behaviour.ts";
+import { similar } from "./stats.ts";
+import { runInference } from "./inference.ts";
+import type { Inference } from "./inference.ts";
+
+export { isRoundAmount };
 
 export type Family = "funding" | "timing" | "amount" | "exit" | "transfer";
 export const FAMILIES: readonly Family[] = ["funding", "timing", "amount", "exit", "transfer"];
@@ -48,37 +53,27 @@ export interface CoordGroup {
   pairs: PairSignal[];
   anchors: string[];
   counterExplanations: string[];
-  /** Enough independent families (and one beyond funding/timing) to write a coordination hypothesis. Never "proof". */
+  /**
+   * A coordination hypothesis may be written: only when hypotheses are enabled by configuration (off by default),
+   * the group is statistically significant after adjustment, uses a funding link, and shows ≥ 3 families including
+   * one beyond funding/timing. Never "proof".
+   */
   hypothesisEligible: boolean;
+  /** Why no hypothesis is eligible, when that is a configuration or inference matter. */
+  hypothesisBlockedBy: string | null;
   baseShare: number | null;
-  /** P(the rest of the cohort, with families shuffled independently, yields a group at least this large); null if the rest is too small (< 6 wallets). */
-  pValue: number | null;
-}
-
-/**
- * Null model for "how large a group do the families form by chance?". Each family's attribute (first-buy slot,
- * first-buy amount, large-exit slots, funding keys) is shuffled across wallets independently — marginals kept, the
- * association between families destroyed — and the largest connected set of wallets joined by pairs with at least
- * `minFamiliesForMulti` families is recorded. A hot launch where everything co-occurs by default has a large null.
- */
-export interface PairExcess {
-  observedMultiPairs: number;
-  observedLargest: number;
-  nullMeanMultiPairs: number;
-  nullMeanLargest: number;
-  nullP95Largest: number;
-  permutations: number;
-  /** P(null largest group >= observed largest group), add-one smoothed. */
-  pValueLargest: number;
+  /** Family-wise adjusted p-value (5D-1 inference); null when the group cannot be tested (see `inference`). */
+  adjustedP: number | null;
+  /** adjustedP < alpha, funding link used, inference status "ok". */
   significant: boolean;
-  /** Sorted largest-group sizes of every permutation (lets each group get its own p-value). */
-  nullSizes: number[];
+  /** "ok": tested; "unknown": funding known for too few wallets; "behaviour_only": no funding link, untestable; "not_applicable". */
+  inference: "ok" | "unknown" | "behaviour_only" | "not_applicable";
 }
 
 export interface ClusterReport {
   groups: CoordGroup[];
-  /** null when the cohort is too small (fewer than 6 wallets) for a null model. */
-  excess: PairExcess | null;
+  /** Result of the group inference (status, coverage, method). Groups below carry its adjusted p-values. */
+  inference: Inference;
   /** Pairs with exactly one family are summarised, not listed one by one. */
   singleFamilyPairs: Record<Family, number>;
   notes: string[];
@@ -92,19 +87,6 @@ export interface ClusterArgs {
   /** Total supply (raw) to express a group's holdings, or null. */
   supplyRaw: bigint | null;
   cfg?: CoordinationConfig;
-}
-
-/**
- * An amount that looks like a default pick: two significant digits ending in 0 or 5 (…0.5, 1, 1.5, 25, 100, 250…)
- * within 1 %. Works for any quote token because it only looks at the magnitude.
- */
-export function isRoundAmount(amount: bigint): boolean {
-  if (amount <= 0n) return false;
-  const v = Number(amount);
-  const scale = 10 ** Math.floor(Math.log10(v));
-  const m = (v / scale) * 10; // 10..99.99
-  const nearest = Math.round(m / 5) * 5;
-  return Math.abs(m - nearest) <= 0.01 * m;
 }
 
 const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${a}`);
@@ -192,13 +174,32 @@ export function clusterCohort(args: ClusterArgs): ClusterReport {
     } else if (fams.length === 1) singleFamilyPairs[fams[0]!]++;
   }
 
-  const excess = pairExcess(args, cfg);
-  /** Chance of a group this large arising from the REST of the cohort (the group's own wallets would inflate the base rates). */
-  const groupP = (wallets: readonly string[]): number | null => {
-    const bg = pairExcess(args, cfg, new Set(wallets));
-    return bg === null ? null : (bg.nullSizes.filter((x) => x >= wallets.length).length + 1) / (bg.permutations + 1);
+  const inference = runInference({ cohort: args.cohort, swaps: args.swaps, funding: args.funding, cfg });
+  /** The tested component that contains most of a group's wallets, if any. */
+  const matchComponent = (wallets: readonly string[]) => {
+    let best: Inference["components"][number] | null = null;
+    let bestOverlap = 0;
+    for (const comp of inference.components) {
+      const overlap = wallets.filter((w) => comp.wallets.includes(w)).length;
+      if (overlap > bestOverlap) {
+        best = comp;
+        bestOverlap = overlap;
+      }
+    }
+    return bestOverlap >= 2 ? best : null;
   };
-
+  const verdict = (wallets: readonly string[]): Pick<CoordGroup, "adjustedP" | "significant" | "inference"> => {
+    if (inference.status !== "ok") return { adjustedP: null, significant: false, inference: inference.status };
+    const comp = matchComponent(wallets);
+    if (comp === null || comp.adjustedP === null) return { adjustedP: null, significant: false, inference: comp === null ? "unknown" : "behaviour_only" };
+    return { adjustedP: comp.adjustedP, significant: comp.adjustedP < cfg.alpha, inference: "ok" };
+  };
+  const blocked = (fams: readonly Family[], v: { significant: boolean }): string | null => {
+    if (!cfg.hypotheses.enabled) return "hypothèses automatiques désactivées par configuration";
+    if (!v.significant) return "groupe non significatif ou non testable";
+    if (fams.length < cfg.cluster.minFamiliesForHypothesis || !fams.some((f) => f !== "funding" && f !== "timing")) return "familles insuffisantes";
+    return null;
+  };
   const byRoot = new Map<string, PairSignal[]>();
   for (const sp of strongPairs) (byRoot.get(find(sp.a)) ?? byRoot.set(find(sp.a), []).get(find(sp.a))!).push(sp);
   const baseOf = new Map(c.map((m) => [m.wallet, m.boughtBase]));
@@ -208,7 +209,8 @@ export function clusterCohort(args: ClusterArgs): ClusterReport {
     if (wallets.length < cfg.cluster.minGroupSize) continue;
     const fams = FAMILIES.filter((f) => ps.some((p) => p.families.includes(f)));
     const baseSum = wallets.reduce((a, w) => a + (baseOf.get(w) ?? 0n), 0n);
-    const gp = groupP(wallets);
+    const v = verdict(wallets);
+    const why = blocked(fams, v);
     groups.push({
       id: `g-${root.slice(0, 6)}`,
       wallets,
@@ -217,8 +219,9 @@ export function clusterCohort(args: ClusterArgs): ClusterReport {
       pairs: ps,
       anchors: [...new Set(ps.flatMap((p) => Object.values(p.anchors).flat() as string[]))].sort(),
       counterExplanations: [...new Set(fams.flatMap((f) => COUNTER_EXPLANATIONS[f]))],
-      hypothesisEligible: fams.length >= cfg.cluster.minFamiliesForHypothesis && fams.some((f) => f !== "funding" && f !== "timing") && gp !== null && gp < cfg.alpha,
-      pValue: gp,
+      hypothesisEligible: why === null,
+      hypothesisBlockedBy: why,
+      ...v,
       baseShare: args.supplyRaw && args.supplyRaw > 0n ? Number((baseSum * 1_000_000n) / args.supplyRaw) / 1_000_000 : null,
     });
   }
@@ -228,108 +231,11 @@ export function clusterCohort(args: ClusterArgs): ClusterReport {
   for (const s of args.funding.shared) {
     if (!s.discriminating || s.wallets.length < Math.max(2, cfg.cluster.minGroupSize)) continue;
     if (groups.some((g) => s.wallets.every((w) => g.wallets.includes(w)))) continue;
-    groups.push({ id: `f-${s.source.slice(0, 6)}-${s.hop}`, wallets: [...s.wallets].sort(), families: ["funding"], strength: "single_signal", pairs: [], anchors: [...s.signatures].sort(), counterExplanations: [...COUNTER_EXPLANATIONS.funding], hypothesisEligible: false, baseShare: null, pValue: null });
+    groups.push({ id: `f-${s.source.slice(0, 6)}-${s.hop}`, wallets: [...s.wallets].sort(), families: ["funding"], strength: "single_signal", pairs: [], anchors: [...s.signatures].sort(), counterExplanations: [...COUNTER_EXPLANATIONS.funding], hypothesisEligible: false, hypothesisBlockedBy: cfg.hypotheses.enabled ? "un seul signal" : "hypothèses automatiques désactivées par configuration", baseShare: null, adjustedP: null, significant: false, inference: "behaviour_only" });
   }
   if (args.funding.notTraced.length > 0 || args.funding.unavailable.length > 0) notes.push("la détection de financement porte sur les wallets tracés uniquement (voir couverture du financement)");
-  if (excess === null && c.length > 0) notes.push("cohorte trop petite pour le modèle nul: aucune hypothèse de coordination n'est écrite");
-  if (excess !== null && !excess.significant && groups.some((g) => g.strength === "multi_signal")) notes.push("les paires à signaux multiples ne dépassent pas ce que le hasard produit pour ce lancement: groupes décrits, pas d'hypothèse");
-  return { groups, excess, singleFamilyPairs, notes };
+  if (inference.status !== "ok" && inference.reason) notes.push(`inférence sur les groupes: ${inference.status.toUpperCase()} — ${inference.reason}`);
+  if (inference.status === "ok" && groups.some((g) => g.strength === "multi_signal" && g.inference === "behaviour_only")) notes.push("des groupes ne reposent que sur le comportement (slot, montant, sortie): similitude décrite, non testable, pas d'hypothèse");
+  return { groups, inference, singleFamilyPairs, notes };
 }
 
-/**
- * Permutation test for "families co-occur more than chance". Each wallet carries one attribute per family (first-buy
- * slot, first-buy amount, large-exit slots, funding keys). The observed number of wallet pairs sharing at least
- * `minFamiliesForMulti` of the four families is compared with the same count after shuffling each attribute across
- * wallets independently (marginals kept, associations destroyed). Transfers are left out: they are pairwise facts.
- */
-function pairExcess(args: ClusterArgs, cfg: CoordinationConfig, drop?: ReadonlySet<string>): PairExcess | null {
-  const c = drop ? args.cohort.filter((m) => !drop.has(m.wallet)) : args.cohort;
-  const n = c.length;
-  if (n < 6) return null;
-  const idx = new Map(c.map((m, i) => [m.wallet, i]));
-  const exits: number[][] = c.map(() => []);
-  const bought = new Map(c.map((m) => [m.wallet, m.boughtBase]));
-  for (const s of args.swaps) {
-    const i = idx.get(s.trader);
-    if (s.side === "sell" && i !== undefined) {
-      const b = bought.get(s.trader) ?? 0n;
-      if (b > 0n && s.baseAmount * 2n >= b) exits[i]!.push(s.slot);
-    }
-  }
-  const keys: Set<string>[] = c.map(() => new Set<string>());
-  for (const sh of args.funding.shared) {
-    if (!sh.discriminating) continue;
-    for (const w of sh.wallets) idx.has(w) && keys[idx.get(w)!]!.add(`src:${sh.source}`);
-  }
-  for (const l of args.funding.internalLinks) {
-    if (idx.has(l.from) && idx.has(l.to)) {
-      keys[idx.get(l.from)!]!.add(`anc:${l.from}`);
-      keys[idx.get(l.to)!]!.add(`anc:${l.from}`);
-    }
-  }
-  const slot = c.map((m) => m.firstBuySlot);
-  const amt = c.map((m) => m.firstBuyQuote);
-  const need = cfg.cluster.minFamiliesForMulti;
-
-  const count = (pS: number[], pA: number[], pE: number[], pF: number[]): { pairs: number; largest: number } => {
-    const parent = Array.from({ length: n }, (_, i) => i);
-    const find = (x: number): number => {
-      while (parent[x] !== x) x = parent[x] = parent[parent[x]!]!;
-      return x;
-    };
-    let total = 0;
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        let fam = 0;
-        if (Math.abs(slot[pS[i]!]! - slot[pS[j]!]!) <= cfg.launch.syncSlots) fam++;
-        const a = amt[pA[i]!]!;
-        const b = amt[pA[j]!]!;
-        if (similar(a, b, cfg.cluster.amountTolerance) && !(isRoundAmount(a) && isRoundAmount(b))) fam++;
-        const ei = exits[pE[i]!]!;
-        const ej = exits[pE[j]!]!;
-        if (ei.length > 0 && ej.length > 0 && ei.some((x) => ej.some((y) => Math.abs(x - y) <= cfg.cluster.exitSyncSlots))) fam++;
-        const ki = keys[pF[i]!]!;
-        const kj = keys[pF[j]!]!;
-        if (ki.size > 0 && kj.size > 0 && [...ki].some((k) => kj.has(k))) fam++;
-        if (fam >= need) {
-          total++;
-          parent[find(i)] = find(j);
-        }
-      }
-    }
-    const sizes = new Map<number, number>();
-    for (let i = 0; i < n; i++) sizes.set(find(i), (sizes.get(find(i)) ?? 0) + 1);
-    return { pairs: total, largest: total === 0 ? 0 : Math.max(...sizes.values()) };
-  };
-  const id = Array.from({ length: n }, (_, i) => i);
-  const observed = count(id, id, id, id);
-  const rnd = prng(cfg.wash.seed + 31);
-  const shuffled = (): number[] => {
-    const a = [...id];
-    for (let i = n - 1; i > 0; i--) {
-      const j = Math.floor(rnd() * (i + 1));
-      [a[i], a[j]] = [a[j]!, a[i]!];
-    }
-    return a;
-  };
-  const sizes: number[] = [];
-  let pairsSum = 0;
-  for (let r = 0; r < cfg.cluster.permutations; r++) {
-    const x = count(shuffled(), shuffled(), shuffled(), shuffled());
-    sizes.push(x.largest);
-    pairsSum += x.pairs;
-  }
-  sizes.sort((x, y) => x - y);
-  const p = (sizes.filter((x) => x >= observed.largest).length + 1) / (cfg.cluster.permutations + 1);
-  return {
-    observedMultiPairs: observed.pairs,
-    observedLargest: observed.largest,
-    nullMeanMultiPairs: pairsSum / cfg.cluster.permutations,
-    nullMeanLargest: sizes.reduce((a, b) => a + b, 0) / sizes.length,
-    nullP95Largest: sizes[Math.min(sizes.length - 1, Math.floor(0.95 * sizes.length))]!,
-    permutations: cfg.cluster.permutations,
-    pValueLargest: p,
-    significant: observed.largest > 0 && p < cfg.alpha,
-    nullSizes: sizes,
-  };
-}

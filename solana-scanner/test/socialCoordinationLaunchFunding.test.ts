@@ -68,27 +68,20 @@ test("launch: share of supply and concentration indices", () => {
   assert.equal(r.giniQuote, 0);
 });
 
-test("launch: a one-slot spike inside a spread-out launch is statistically unusual; organic launches are not", () => {
+test("launch: synchrony is a descriptive ratio to the launch's own pattern — no p-value, never calibrated", () => {
   const { swaps } = organicLaunch(prng(7), 35, 1000, 35);
   const spike = BASE_SLOT + 100;
   const coordinated = [...swaps, ...Array.from({ length: 12 }, (_, i) => swapEvent(2000 + i, spike, addr(`bundle-${i}`), "buy", 7_000_000n, (7n * SOL) / 100n))];
   const rc = launchOf(coordinated);
-  assert.equal(rc.sync.unusual, true, `p=${rc.sync.pValue}`);
-  assert.ok(rc.sync.observedPairs > rc.sync.expectedPairs * 1.5, `${rc.sync.observedPairs} vs ${rc.sync.expectedPairs}`);
-  // false-positive rate on purely organic launches stays near alpha
-  let flagged = 0;
-  for (let seed = 1; seed <= 30; seed++) {
-    const o = organicLaunch(prng(seed * 101), 40, 1000, seed % 2 === 0 ? 12 : 35);
-    if (launchOf(o.swaps).sync.unusual) flagged++;
+  const ro = launchOf(swaps);
+  assert.equal(rc.sync.calibrated, false);
+  assert.ok(!("pValue" in rc.sync) && !("unusual" in rc.sync), "the old uncalibrated p-value and verdict are gone");
+  assert.ok(rc.sync.ratio! > 1.3 * ro.sync.ratio!, `spike ratio ${rc.sync.ratio} vs organic ${ro.sync.ratio}`);
+  // the measure is stable: organic launches sit around 1 (their own pattern) whatever the heat
+  for (const mean of [6, 12, 35]) {
+    const r = launchOf(organicLaunch(prng(mean), 40, 1000, mean).swaps);
+    assert.ok(r.sync.ratio! > 0.5 && r.sync.ratio! < 2, `mean ${mean}: ratio ${r.sync.ratio}`);
   }
-  assert.ok(flagged <= 2, `${flagged}/30 organic launches flagged`);
-});
-
-test("launch: in a very hot launch, ordinary crowding is NOT flagged (the baseline is the launch itself)", () => {
-  const { swaps } = organicLaunch(prng(7), 45, 1000, 6);
-  const r = launchOf(swaps);
-  assert.ok(r.buyersWithin5Slots >= 15, "the scenario is hot: many buyers in the first slots");
-  assert.equal(r.sync.unusual, false, `p=${r.sync.pValue}`);
 });
 
 test("launch: result does not depend on input order", () => {

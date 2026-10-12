@@ -17,17 +17,19 @@ export function formatCoordination(r: CoordinationResult): string {
   out.push(`Couverture: ${r.coverage.signaturesRead} signatures listées (${r.coverage.signaturesComplete ? "historique complet" : "HISTORIQUE INCOMPLET"}), ${r.coverage.transactionsRead} transactions lues, ${r.coverage.transactionsMissing} manquantes${r.scopeLimited ? " — analyse limitée aux plus anciennes" : ""}`);
   out.push(`[FAIT VÉRIFIÉ] ${r.swaps.length} swaps lus (${r.swaps.filter((s) => s.side === "buy").length} achats), ${r.transfers.length} transferts exacts entre wallets${Object.keys(r.skipped).length ? `, non classés: ${JSON.stringify(r.skipped)}` : ""}`);
   out.push(`Lancement: ${L.launchObserved ? "observé" : "NON observé"}; cohorte ${L.cohort.length} acheteurs; ${L.buyersFirstSlot} au premier slot, ${L.buyersWithin5Slots} dans les 5 premiers; part de l'offre ${pct(L.cohortSupplyShare, 2)}; top-5 = ${pct(L.top5BuyShare)} des achats de la cohorte`);
-  out.push(`[INDICE statistique] paires synchrones ${L.sync.observedPairs} observées vs ${L.sync.expectedPairs.toFixed(1)} attendues (p=${L.sync.pValue === null ? "n/a" : L.sync.pValue.toFixed(3)}${L.sync.unusual ? ", inhabituel" : ""})`);
+  out.push(`[MESURE] paires synchrones ${L.sync.observedPairs} observées; référence indicative ${L.sync.baselineMeanPairs.toFixed(1)}${L.sync.ratio === null ? "" : ` (rapport ${L.sync.ratio.toFixed(2)})`}; aucune p-value (la référence est le lancement lui-même)`);
   out.push(`Financement: ${r.funding.wallets.length} wallets remontés${r.funding.notTraced.length ? ` (+${r.funding.notTraced.length} non remontés)` : ""}, ${r.funding.unavailable.length} sans historique, ${r.funding.wallets.filter((w) => w.partial).length} partiels`);
   for (const s of r.funding.shared.slice(0, 6)) {
     out.push(`  - source ${short(s.source)} (saut ${s.hop}): ${s.wallets.length} wallets, ${s.discriminating ? "non neutre" : `NEUTRE/NON DISCRIMINANT${s.entity ? ` (${s.entity.label})` : s.probableService ? " (wallet très actif)" : ""}`}${s.similarAmounts ? ", montants proches" : ""}${s.burst ? ", en rafale" : ""}`);
   }
+  const inf = r.cluster.inference;
+  out.push(`Inférence sur les groupes: ${inf.status.toUpperCase()}${inf.reason ? ` — ${inf.reason}` : `, ${inf.knownWallets}/${inf.tracedWallets} wallets au financement connu, ${inf.permutations} permutations (validée sur benchmarks synthétiques seulement)`}`);
   for (const g of r.cluster.groups.slice(0, 6)) {
-    out.push(`[${g.hypothesisEligible ? "HYPOTHÈSE possible" : "INDICE"}] groupe ${g.id}: ${g.wallets.length} wallets, familles ${g.families.join("+")}${g.strength === "single_signal" ? " (un seul signal)" : ""}`);
+    out.push(`[${g.hypothesisEligible ? "HYPOTHÈSE possible" : "INDICE"}] groupe ${g.id}: ${g.wallets.length} wallets, familles ${g.families.join("+")}${g.strength === "single_signal" ? " (un seul signal)" : ""}; ${g.inference === "ok" ? `p ajusté ${g.adjustedP!.toFixed(3)}${g.significant ? " (significatif)" : " (non significatif)"}` : `sans p-value (${g.inference})`}`);
   }
   if (r.cluster.groups.length === 0) out.push("Groupes à signaux multiples: aucun");
   const W = r.wash;
-  out.push(`Volume: ${W.swaps} swaps, ~${amount(W.grossQuote)}, ${W.distinctTraders} wallets jugés; aller-retours ${pct(W.roundTripShare)}${W.permutation ? ` (modèle nul: moyenne ${pct(W.permutation.nullMean)}, p95 ${pct(W.permutation.nullP95)}, p=${W.permutation.pValue.toFixed(3)})` : ""}; wallets réguliers ${W.cadence.filter((c) => c.metronomic).length}; cycles de transferts ${W.transferCycles.length}`);
+  out.push(`Volume: ${W.swaps} swaps, ~${amount(W.grossQuote)}, ${W.distinctTraders} wallets jugés; aller-retours ${pct(W.roundTripShare)} du volume jugé (mesure descriptive, sans test); motif d'aller-retours répétés équilibrés: ${W.motifWallets.length} wallet(s) (${pct(W.motifVolumeShare)} du volume); wallets réguliers ${W.cadence.filter((c) => c.metronomic).length}; cycles de transferts ${W.transferCycles.length}`);
   for (const f of W.flags) out.push(`  ! ${f}`);
   out.push("Limites:");
   for (const l of r.limits) out.push(`  - ${l}`);

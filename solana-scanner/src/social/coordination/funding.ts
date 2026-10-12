@@ -47,6 +47,14 @@ export interface WalletFunding {
   terminal: { address: string; reason: TerminalReason; entity: KnownEntity | null };
   /** True when at least one history on the chain did not reach the oldest transaction: the "first" funding may not be the first. */
   partial: boolean;
+  /**
+   * What is known about this wallet's first-hop funding:
+   *   known    a funder was observed (link observed, even if the history is partial: see `partial`), or a COMPLETE
+   *            history holds none (no link in a covered history)
+   *   unknown  missing history, or a partial history in which nothing was found: absence of a link is NOT evidence
+   *            of absence. Deeper hops may still be missing (`partial`, terminal reason).
+   */
+  knowledge: "known" | "unknown";
 }
 
 export interface SharedSource {
@@ -90,6 +98,9 @@ export interface FundingReport {
   creatorChain: string[];
   creatorLinks: CreatorLink[];
   wallets: WalletFunding[];
+  /** Number of traced wallets whose funding relations are known / unknown (see WalletFunding.knowledge). */
+  knownCount: number;
+  unknownCount: number;
   /** Cohort wallets beyond `maxWallets`: not traced. */
   notTraced: string[];
   /** Wallets for which no history could be obtained at all. */
@@ -168,7 +179,10 @@ export function traceFunding(args: FundingArgs): FundingReport {
       cur = ff.from;
       if (hop === fcfg.maxHops) terminal = { address: ff.from, reason: "max_hops", entity: null };
     }
-    wallets.push({ wallet: w, chain, terminal: terminal ?? { address: cur, reason: "max_hops", entity: null }, partial });
+    const term = terminal ?? { address: cur, reason: "max_hops" as const, entity: null };
+    // hop-1 outcome decides: a funder was observed, or a COMPLETE history holds none. A missing or capped history with nothing found says nothing.
+    const knowledge = chain.length > 0 || term.reason === "no_funding_found" ? ("known" as const) : ("unknown" as const);
+    wallets.push({ wallet: w, chain, terminal: term, partial, knowledge });
   }
 
   // the creator's own funding chain (creator, its funder, ...), stopping at neutral entities and very active wallets
@@ -251,5 +265,6 @@ export function traceFunding(args: FundingArgs): FundingReport {
   if (partials > 0) notes.push(`${partials} wallet(s) avec historique partiel: le premier financement observé n'est peut-être pas le premier`);
   if (unavailable.length > 0) notes.push(`${unavailable.length} wallet(s) sans historique disponible`);
   if (creatorLinks.length > 0) notes.push(`${new Set(creatorLinks.map((l) => l.wallet)).size} wallet(s) ont reçu du SOL du créateur ou d'un de ses financeurs (lien factuel, pas une preuve de contrôle)`);
-  return { creatorChain, creatorLinks, wallets, notTraced, unavailable, shared, internalLinks, notes };
+  const knownCount = wallets.filter((w) => w.knowledge === "known").length;
+  return { knownCount, unknownCount: wallets.length - knownCount, creatorChain, creatorLinks, wallets, notTraced, unavailable, shared, internalLinks, notes };
 }

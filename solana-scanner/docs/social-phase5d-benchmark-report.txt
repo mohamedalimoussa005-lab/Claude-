@@ -1,0 +1,46 @@
+# Benchmark de coordination — 200 lancements par régime nul, graines fixes
+
+## Faux positifs et calibration (régimes nuls; niveau alpha=0,01 puis 0,05)
+- organique indépendant, chaud: faux positifs 1/200 (0.5 %) à 0,01 ; 2/200 (1.0 %) à 0,05 ; groupes décrits 490 ; p min médian 1.000, q05 0.126 ; hypothèses 0
+- organique indépendant, étalé: faux positifs 0/200 (0.0 %) à 0,01 ; 4/200 (2.0 %) à 0,05 ; groupes décrits 246 ; p min médian 1.000, q05 0.134 ; hypothèses 0
+- organique corrélé (arrivée/montant/sortie), chaud: faux positifs 0/200 (0.0 %) à 0,01 ; 0/200 (0.0 %) à 0,05 ; groupes décrits 588 ; p min médian 0.862, q05 0.325 ; hypothèses 0
+- organique corrélé, étalé: faux positifs 0/200 (0.0 %) à 0,01 ; 0/200 (0.0 %) à 0,05 ; groupes décrits 923 ; p min médian 1.000, q05 0.160 ; hypothèses 0
+- copy-trading: faux positifs 0/200 (0.0 %) à 0,01 ; 1/200 (0.5 %) à 0,05 ; groupes décrits 321 ; p min médian 1.000, q05 1.000 ; hypothèses 0
+- market making + arbitrage: faux positifs 0/200 (0.0 %) à 0,01 ; 2/200 (1.0 %) à 0,05 ; groupes décrits 154 ; p min médian 1.000, q05 1.000 ; hypothèses 0
+- semi-réel A (lancement réel, financement indépendant): faux positifs 1/200 (0.5 %) à 0,01 ; 3/200 (1.5 %) à 0,05 ; groupes décrits 1402 ; p min médian 0.513, q05 0.088 ; hypothèses 0
+- semi-réel B (lancement réel, financement indépendant): faux positifs 0/200 (0.0 %) à 0,01 ; 11/200 (5.5 %) à 0,05 ; groupes décrits 409 ; p min médian 1.000, q05 0.042 ; hypothèses 0
+
+## Confondeur (association réelle financement ↔ comportement, pas une intention)
+- communautés financées par un fondateur: signalées 6/200 (3.0 %)
+
+## Puissance de détection (coordination synthétique contrôlée, 100 lancements par case)
+- k=3 wallets — F+T+A+E: 13.0 % | F+T+A: 13.0 % | F+T: 9.0 % | F+A+E: 12.0 % | T+A+E (no funding): 0.0 %
+- k=5 wallets — F+T+A+E: 88.0 % | F+T+A: 79.0 % | F+T: 86.0 % | F+A+E: 82.0 % | T+A+E (no funding): 0.0 %
+- k=8 wallets — F+T+A+E: 98.0 % | F+T+A: 93.0 % | F+T: 89.0 % | F+A+E: 94.0 % | T+A+E (no funding): 0.0 %
+- k=12 wallets — F+T+A+E: 99.0 % | F+T+A: 91.0 % | F+T: 79.0 % | F+A+E: 82.0 % | T+A+E (no funding): 0.0 %
+
+## Semi-réel : financement planté sur des wallets réels
+- B, 4 wallets réels entrés au même slot: 98.0 %
+- A, groupe comportemental réel de 5 wallets: 3.0 %
+- A, groupe comportemental réel de 3 wallets: 0.0 %
+
+## Sensibilité aux paramètres (nul corrélé étalé: faux positifs ; k=8 F+T+A+E: puissance)
+- défaut: faux positifs 0/100 ; puissance 98.0 %
+- alpha 0,05: faux positifs 0/100 ; puissance 100.0 %
+- permutations 100: faux positifs 0/100 ; puissance 95.0 %
+- permutations 1000: faux positifs 0/100 ; puissance 100.0 %
+- tolérance de montant 2 %: faux positifs 0/100 ; puissance 100.0 %
+- tolérance de montant 10 %: faux positifs 0/100 ; puissance 90.0 %
+- sync 0 slot: faux positifs 0/100 ; puissance 100.0 %
+- sync 3 slots: faux positifs 0/100 ; puissance 78.0 %
+- sortie 1 slot: faux positifs 0/100 ; puissance 100.0 %
+- sortie 5 slots: faux positifs 0/100 ; puissance 91.0 %
+- 3 familles par paire: faux positifs 0/100 ; puissance 100.0 %
+
+## Robustesse à l'historique incomplet (fraction de wallets dont l'historique est partiel et vide)
+- 0 % dégradés: inférence exécutée 100/100 (nul) et 100/100 (planté) ; faux positifs 0/100 ; puissance 98.0 % ; UNKNOWN 0/100
+- 25 % dégradés: inférence exécutée 100/100 (nul) et 100/100 (planté) ; faux positifs 0/100 ; puissance 91.0 % ; UNKNOWN 0/100
+- 50 % dégradés: inférence exécutée 61/100 (nul) et 62/100 (planté) ; faux positifs 0/100 ; puissance 44.0 % ; UNKNOWN 38/100
+- 75 % dégradés: inférence exécutée 0/100 (nul) et 0/100 (planté) ; faux positifs 0/100 ; puissance 0.0 % ; UNKNOWN 100/100
+
+Rappel: aucune de ces valeurs n'est un taux réel de manipulation.

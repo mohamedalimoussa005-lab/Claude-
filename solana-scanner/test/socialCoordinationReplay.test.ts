@@ -107,7 +107,7 @@ for (const k of TOKENS) {
     const c = loadCapture(k);
     const a = run(k);
     const b = analyzeCoordination(inputOf(c, { txs: [...c.txs].reverse().map(normalizeTx) }));
-    const view = (r: CoordinationResult) => JSON.stringify([r.launch.cohort.map((m) => [m.wallet, m.firstBuySlot]), r.cluster.groups.map((g) => [g.wallets, g.families]), r.funding.shared.map((s) => [s.source, s.wallets]), r.wash.roundTripShare, r.wash.permutation]);
+    const view = (r: CoordinationResult) => JSON.stringify([r.launch.cohort.map((m) => [m.wallet, m.firstBuySlot]), r.cluster.groups.map((g) => [g.wallets, g.families]), r.funding.shared.map((s) => [s.source, s.wallets]), r.wash.roundTripShare, r.cluster.inference.status, r.wash.motifWallets.length]);
     assert.equal(view(a), view(b));
   });
 
@@ -127,21 +127,25 @@ for (const k of TOKENS) {
 
 const near = (a: number | null, b: number, tol: number, what: string) => assert.ok(a !== null && Math.abs(a - b) <= tol, `${what}: ${a} vs ${b}`);
 
-test("replay snapshot A (PumpSwap token, SOL-quoted): the whole bonding-curve phase fits in 141 slots", { skip: !have("A") && "no fixture" }, () => {
+test("replay snapshot A (PumpSwap token, SOL-quoted): descriptive measures only; group inference is UNKNOWN for lack of known funding", { skip: !have("A") && "no fixture" }, () => {
   const r = run("A");
   assert.deepEqual([r.swaps.length, r.launch.cohort.length, r.launch.launchObserved, r.quoteMint === "So11111111111111111111111111111111111111112"], [221, 50, true, true]);
   assert.equal(r.skipped.other_quote_mint, 3);
   assert.equal(r.funding.wallets.length, 50);
   assert.equal(r.funding.wallets.filter((w) => w.partial).length, 39, "39 of 50 funding histories are partial");
+  assert.deepEqual([r.funding.knownCount, r.funding.unknownCount], [12, 38]);
   assert.equal(r.funding.shared.filter((s) => s.discriminating).length, 1);
   near(r.launch.cohortSupplyShare, 0.349, 0.005, "net supply share");
   assert.ok(r.launch.cohortGrossBuyShare! > 1, "gross buys exceed the supply: wallets buy again after selling");
-  assert.equal(r.launch.sync.unusual, true);
-  assert.ok(r.cluster.groups.length >= 3);
-  assert.equal(r.cluster.groups.filter((g) => g.hypothesisEligible).length, 0, "groups exist but none rises above what this hot launch does by chance");
+  assert.equal(r.launch.sync.calibrated, false);
+  assert.ok(r.launch.sync.ratio! > 2, "close first buys clearly exceed the launch's own baseline (descriptive)");
+  assert.equal(r.cluster.inference.status, "unknown", "12 of 50 funding histories are known: no test, no 'no link'");
+  assert.ok(r.cluster.groups.length >= 3, "groups are described…");
+  assert.ok(r.cluster.groups.every((g) => g.adjustedP === null && !g.significant && !g.hypothesisEligible), "…without any p-value or hypothesis");
   near(r.wash.roundTripShare, 0.288, 0.01, "round-trip share");
-  assert.ok(r.wash.permutation!.pValue < 0.01);
+  assert.equal(r.wash.motifWallets.length, 0);
   assert.equal(r.wash.transferCycles.length, 0);
+  assert.equal(scoreCoordinationRiskDraft(extractCoordinationFeatures(r)).score, null, "fewer than 3 known components: UNKNOWN, not a number");
 });
 
 test("replay snapshot B (Token-2022 CP-Swap token; early phase is SOL-quoted)", { skip: !have("B") && "no fixture" }, () => {
@@ -149,13 +153,14 @@ test("replay snapshot B (Token-2022 CP-Swap token; early phase is SOL-quoted)", 
   assert.deepEqual([r.swaps.length, r.launch.cohort.length, r.launch.launchObserved], [143, 45, true]);
   assert.equal(r.skipped.other_quote_mint, 14);
   assert.equal(r.funding.shared.length, 0);
+  assert.equal(r.funding.knownCount, 18);
+  assert.equal(r.cluster.inference.status, "unknown");
   assert.equal(r.cluster.groups.length, 0);
-  assert.equal(r.launch.sync.unusual, false);
   near(r.wash.roundTripShare, 0.137, 0.01, "round-trip share");
-  assert.equal(r.wash.flags.length, 0);
-  const d = scoreCoordinationRiskDraft(extractCoordinationFeatures(r));
-  assert.equal(d.level, "LOW");
-  assert.equal(d.partialData, true);
+  assert.equal(r.wash.motifWallets.length, 0);
+  const f = extractCoordinationFeatures(r);
+  assert.equal(f.sharedFundingShare, null, "18/45 known (40 %): UNKNOWN, not 0 %");
+  assert.equal(scoreCoordinationRiskDraft(f).partialData, true);
 });
 
 test("replay snapshot C: the launch is out of reach of free paging, and the result says so", { skip: !have("C") && "no fixture" }, () => {
@@ -171,18 +176,19 @@ test("replay snapshot C: the launch is out of reach of free paging, and the resu
   assert.ok(r.limits.some((l) => l.includes("historique incomplet")));
 });
 
-test("replay snapshot F (Raydium CLMM, USDC-quoted): 212 swaps by 5 wallets, almost all of it round trips", { skip: !have("F") && "no fixture" }, () => {
+test("replay snapshot F (Raydium CLMM, USDC-quoted): 212 swaps by 5 wallets, round trips dominate and 2 wallets show the balanced motif", { skip: !have("F") && "no fixture" }, () => {
   const r = run("F");
   assert.equal(r.quoteMint, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
   assert.deepEqual([r.swaps.length, r.wash.distinctTraders, r.launch.cohort.length], [212, 5, 1]);
   near(r.wash.roundTripShare, 0.987, 0.005, "round-trip share");
-  assert.ok(r.wash.permutation!.pValue < 0.01);
   assert.equal(r.wash.roundTripWallets.length, 2);
+  assert.deepEqual(r.wash.motifWallets.length, 2);
+  near(r.wash.motifVolumeShare, 0.987, 0.01, "motif volume share");
+  assert.ok(r.wash.flags.every((f) => !/anormal|modèle nul/i.test(f)), "descriptive flags only");
   assert.equal(r.cluster.groups.length, 0, "no cohort to group");
-  assert.equal(r.cluster.excess, null);
+  assert.notEqual(r.cluster.inference.status, "ok");
   assert.equal(r.scopeLimited, true);
-  const d = scoreCoordinationRiskDraft(extractCoordinationFeatures(r));
-  assert.equal(d.score, null);
+  assert.equal(scoreCoordinationRiskDraft(extractCoordinationFeatures(r)).score, null);
 });
 
 test("replay: the creator's funding is declared unestablished when the creator is a very active wallet (A, B, C), and no link is invented", () => {

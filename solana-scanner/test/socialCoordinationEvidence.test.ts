@@ -84,9 +84,22 @@ test("end to end: swaps by a known bot are excluded from the cohort", () => {
 
 // ---------------------------------------------------------------- ledger
 
-test("ledger: observed facts, computed indications and the hypothesis are kept strictly apart", () => {
+test("priority 0: by default NO hypothesis is written, only facts, descriptive measures, indications and gaps", () => {
   const { input } = scenario();
   const r = analyzeCoordination(input);
+  assert.ok(r.cluster.groups.some((g) => g.significant), "the planted bundle is statistically significant…");
+  assert.ok(r.cluster.groups.every((g) => !g.hypothesisEligible), "…and still no hypothesis is eligible");
+  const ledger = new EvidenceLedger();
+  const ids = recordCoordinationEvidence({ ledger, result: r, observedAt: OBSERVED_AT });
+  assert.equal(ids.hypotheses.length, 0);
+  assert.ok(!ledger.all().some((e) => e.status === "HYPOTHESIS" || e.type === "coordination_assessment"));
+  assert.ok(ledger.all().some((e) => e.limits.some((l) => l.includes("aucune hypothèse écrite: hypothèses automatiques désactivées"))));
+  assert.ok(ledger.all().some((e) => e.status === "FACT") && ledger.all().some((e) => e.status === "INDICATION"));
+});
+
+test("ledger: observed facts, computed indications and the hypothesis are kept strictly apart (hypotheses explicitly enabled)", () => {
+  const { input } = scenario();
+  const r = analyzeCoordination({ ...input, cfg: withConfig({ hypotheses: { enabled: true } }) });
   const ledger = new EvidenceLedger();
   const ids = recordCoordinationEvidence({ ledger, result: r, observedAt: OBSERVED_AT });
   const all = ledger.all();
@@ -104,7 +117,7 @@ test("ledger: observed facts, computed indications and the hypothesis are kept s
   const launch = byId.get(ids.launch!)!;
   assert.equal(launch.status, "INDICATION");
   assert.equal(launch.derivation, "computed");
-  assert.ok(launch.limits.some((l) => l.includes("indice statistique")));
+  assert.ok(launch.limits.some((l) => l.includes("aucune p-value")));
   assert.equal(byId.get(ids.wash!)!.status, "INDICATION");
   for (const g of ids.groups) assert.equal(byId.get(g)!.status, "INDICATION");
 
@@ -189,7 +202,7 @@ test("ledger: recording twice into one ledger is rejected as a duplicate, not si
 
 // ---------------------------------------------------------------- draft score
 
-const F = (over: Partial<CoordinationFeatures> = {}): CoordinationFeatures => ({ launchObserved: true, dataComplete: true, cohortSize: 40, cohortSupplyShare: 0.05, top5BuyShare: 0.2, syncUnusual: false, sharedFundingShare: 0, tracedWallets: 40, multiSignalWalletShare: 0, significantGroupWalletShare: 0, maxFamilies: 0, roundTripExcess: 0, metronomicWallets: 0, transferCycles: 0, ...over });
+const F = (over: Partial<CoordinationFeatures> = {}): CoordinationFeatures => ({ launchObserved: true, dataComplete: true, cohortSize: 40, cohortSupplyShare: 0.05, top5BuyShare: 0.2, sharedFundingShare: 0, tracedWallets: 40, multiSignalWalletShare: 0, significantGroupWalletShare: 0, maxFamilies: 0, motifVolumeShare: 0, fundingKnownShare: 1, metronomicWallets: 0, transferCycles: 0, ...over });
 
 test("risk draft: status, version and interpretation say what it is not", () => {
   const d = scoreCoordinationRiskDraft(F());
@@ -200,11 +213,11 @@ test("risk draft: status, version and interpretation say what it is not", () => 
 });
 
 test("risk draft: unknown inputs are unknown, never zero; too few components → no score", () => {
-  const few = scoreCoordinationRiskDraft(F({ cohortSupplyShare: null, sharedFundingShare: null, roundTripExcess: null }));
+  const few = scoreCoordinationRiskDraft(F({ cohortSupplyShare: null, sharedFundingShare: null, motifVolumeShare: null }));
   assert.equal(few.score, null);
   assert.equal(few.level, "UNKNOWN");
   assert.equal(few.missing.length, 3);
-  const three = scoreCoordinationRiskDraft(F({ roundTripExcess: null }));
+  const three = scoreCoordinationRiskDraft(F({ motifVolumeShare: null }));
   assert.notEqual(three.score, null);
   assert.equal(three.components.find((c) => c.key === "volumePattern")!.points, null);
 });
@@ -216,12 +229,12 @@ test("risk draft: partial data is flagged", () => {
 
 test("risk draft: a coordinated token scores above an organic one, and each indicator is monotone", () => {
   const quiet = scoreCoordinationRiskDraft(F());
-  const loud = scoreCoordinationRiskDraft(F({ cohortSupplyShare: 0.4, syncUnusual: true, sharedFundingShare: 0.6, multiSignalWalletShare: 0.5, significantGroupWalletShare: 0.5, maxFamilies: 4, roundTripExcess: 0.4, metronomicWallets: 2, transferCycles: 1 }));
+  const loud = scoreCoordinationRiskDraft(F({ cohortSupplyShare: 0.4, sharedFundingShare: 0.6, multiSignalWalletShare: 0.5, significantGroupWalletShare: 0.5, maxFamilies: 4, motifVolumeShare: 0.4, metronomicWallets: 2, transferCycles: 1 }));
   assert.ok(quiet.score! < 10, `quiet ${quiet.score}`);
   assert.ok(loud.score! >= 60 && loud.level === "HIGH", `loud ${loud.score}`);
   const rng = prng(4);
   for (let i = 0; i < 100; i++) {
-    const base = F({ cohortSupplyShare: rng() * 0.5, sharedFundingShare: rng() * 0.8, multiSignalWalletShare: rng() * 0.6, significantGroupWalletShare: rng() * 0.6, roundTripExcess: rng() * 0.5 - 0.1 });
+    const base = F({ cohortSupplyShare: rng() * 0.5, sharedFundingShare: rng() * 0.8, multiSignalWalletShare: rng() * 0.6, significantGroupWalletShare: rng() * 0.6, motifVolumeShare: rng() * 0.5 });
     const more = { ...base, sharedFundingShare: Math.min(1, base.sharedFundingShare! + 0.1) };
     assert.ok(scoreCoordinationRiskDraft(more).score! >= scoreCoordinationRiskDraft(base).score!);
   }
