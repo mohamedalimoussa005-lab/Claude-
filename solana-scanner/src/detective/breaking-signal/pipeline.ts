@@ -9,7 +9,7 @@ import { formatAlert1, formatAlert2 } from "./notify.ts";
 import type { Notifier } from "./notify.ts";
 import { verifyPost } from "./verify.ts";
 import type { PageFetcher } from "./verify.ts";
-import type { Alert, BreakingResult, DetectiveBrief, Homonym, OnchainQuick, PostEvent, StageTimes } from "./types.ts";
+import type { Alert, BreakingResult, LatencySummary, DetectiveBrief, Homonym, OnchainQuick, PostEvent, StageTimes } from "./types.ts";
 
 export interface PipelineDeps {
   cfg: BreakingConfig;
@@ -50,6 +50,20 @@ export function delaysOf(t: StageTimes): Record<string, number | null> {
   };
 }
 
+export function latencyOf(event: PostEvent, t: StageTimes): LatencySummary {
+  const d = (a: number | undefined, b: number | undefined) => (a === undefined || b === undefined ? null : b - a);
+  const simulated = event.provenance !== "x-official";
+  return {
+    publicationToDetectionMs: d(t.published, t.received),
+    publicationToDetectionIsSimulated: simulated,
+    detectionProcessingMs: d(t.received, t.extracted),
+    firstAlertMs: d(t.received, t.notified1),
+    investigationMs: d(t.detectiveStarted, t.detectiveDone),
+    firstToSecondAlertMs: d(t.notified1, t.notified2),
+    note: simulated ? "L'écart publication → détection est SIMULÉ (publication fictive): ce n'est pas un délai réel de détection sur X." : "Délai mesuré entre l'horodatage de la publication et sa réception par le système.",
+  };
+}
+
 export async function handleEvent(event: PostEvent, deps: PipelineDeps): Promise<BreakingResult> {
   const now = deps.now ?? Date.now;
   const times: StageTimes = { published: event.createdAt, received: now() };
@@ -57,7 +71,7 @@ export async function handleEvent(event: PostEvent, deps: PipelineDeps): Promise
   const empty = { alerts: [] as Alert[], detective: null, homonyms: [] as Homonym[], onchain: null };
   if (seen.has(event.id)) {
     const extraction = extractFromPost(event, deps.cfg);
-    return { event, extraction, verification: { level: "NON VÉRIFIÉ", criteria: [], officialAddress: null, addressSource: null, notes: ["événement déjà traité: aucune alerte répétée"] }, times, delays: delaysOf(times), duplicate: true, ...empty };
+    return { event, extraction, verification: { level: "NON VÉRIFIÉ", criteria: [], officialAddress: null, addressSource: null, notes: ["événement déjà traité: aucune alerte répétée"] }, times, delays: delaysOf(times), latency: latencyOf(event, times), duplicate: true, ...empty };
   }
   seen.add(event.id);
 
@@ -95,5 +109,5 @@ export async function handleEvent(event: PostEvent, deps: PipelineDeps): Promise
     times.notified2 = sent2.at;
     alerts.push({ stage: 2, text: text2, level: verification.level, provenance: event.provenance });
   }
-  return { event, extraction, verification, onchain, homonyms, alerts, detective, times, delays: delaysOf(times), duplicate: false };
+  return { event, extraction, verification, onchain, homonyms, alerts, detective, times, delays: delaysOf(times), latency: latencyOf(event, times), duplicate: false };
 }

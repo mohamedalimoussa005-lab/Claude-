@@ -119,7 +119,12 @@ writeFileSync(join(dir, "results.json"), JSON.stringify({ x: xStatus(process.env
 for (const r of results) {
   console.log(`\n=== ${r.event.id} — ${r.verification.level} ===`);
   for (const a of r.alerts) console.log(`\n--- Message ${a.stage}/${r.alerts.length > 1 ? 2 : 1} ${notifier.mode === "live" ? "(envoyé)" : "(simulé, non envoyé)"} ---\n${a.text}`);
-  console.log("\nDélais:");
-  for (const [k, v] of Object.entries(r.delays)) if (v !== null) console.log(`  ${k}: ${fmt(v)}${k.startsWith("publication") ? " (écart simulé)" : ""}`);
+  console.log("\nLatences (mesurées séparément):");
+  const l = r.latency;
+  console.log(`  détection — publication → réception: ${fmt(l.publicationToDetectionMs)}${l.publicationToDetectionIsSimulated ? " (SIMULÉ, pas un délai réel sur X)" : ""}; traitement interne: ${fmt(l.detectionProcessingMs)}`);
+  console.log(`  première alerte — réception → message 1: ${fmt(l.firstAlertMs)}`);
+  console.log(`  enquête — durée DETECTIVE: ${fmt(l.investigationMs)}; message 1 → message 2: ${fmt(l.firstToSecondAlertMs)}`);
+  console.log("\nDélais par étape:");
+  for (const [k, v] of Object.entries(r.delays)) if (v !== null) console.log(`  ${k}: ${fmt(v)}${k.startsWith("publication") && l.publicationToDetectionIsSimulated ? " (simulé)" : ""}`);
 }
 console.error(`\nRésultats écrits dans ${dir}/results.json`);

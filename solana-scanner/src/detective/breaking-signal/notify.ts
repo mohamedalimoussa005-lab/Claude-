@@ -91,7 +91,7 @@ export function formatAlert1(r: Pick<BreakingResult, "event" | "extraction" | "v
   const L: string[] = [];
   L.push(`${sim}${detectiveFollows ? "ALERTE 1/2" : "ALERTE"} — ${BADGE[v.level]}`);
   L.push(`Compte: ${accountLabel ?? "inconnu"} (@${e.handle}, id ${e.authorId})`);
-  L.push(`Publié: ${utc(e.createdAt)} · détecté: ${utc(r.times.received)} (+${((r.times.received - e.createdAt) / 1000).toFixed(1)} s)`);
+  L.push(`Publié: ${utc(e.createdAt)} · détecté: ${utc(r.times.received)} (+${((r.times.received - e.createdAt) / 1000).toFixed(1)} s${e.provenance === "x-official" ? "" : ", écart SIMULÉ: pas un délai réel sur X"})`);
   L.push(`Lien original: ${e.url}`);
   L.push(`Texte: « ${e.text.replace(/\s+/g, " ").slice(0, 280)} »`);
   if (v.officialAddress) {

@@ -1,4 +1,4 @@
-export { handleEvent, delaysOf } from "./pipeline.ts";
+export { handleEvent, delaysOf, latencyOf } from "./pipeline.ts";
 export type { PipelineDeps } from "./pipeline.ts";
 export { createNotifier, SimulatedNotifier, TelegramNotifier, redact } from "./notify.ts";
 export { loadConfig, telegramFromEnv, DEFAULT_CONFIG, validateAccounts } from "./config.ts";

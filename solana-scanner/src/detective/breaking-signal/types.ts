@@ -108,6 +108,20 @@ export interface DetectiveBrief {
   findings: Finding[];
 }
 
+export interface LatencySummary {
+  /** Source side: publication → reception. Simulated (not a real X delay) whenever provenance is not "x-official". */
+  publicationToDetectionMs: number | null;
+  publicationToDetectionIsSimulated: boolean;
+  /** Our own processing: reception → extraction (timestamping) and reception → verified. */
+  detectionProcessingMs: number | null;
+  /** reception → first notification (does not include DETECTIVE). */
+  firstAlertMs: number | null;
+  /** DETECTIVE enquiry duration, and first alert → second alert. */
+  investigationMs: number | null;
+  firstToSecondAlertMs: number | null;
+  note: string;
+}
+
 export interface BreakingResult {
   event: PostEvent;
   extraction: Extraction;
@@ -118,6 +132,7 @@ export interface BreakingResult {
   detective: DetectiveBrief | null;
   times: StageTimes;
   delays: Record<string, number | null>;
+  latency: LatencySummary;
   duplicate: boolean;
 }
 

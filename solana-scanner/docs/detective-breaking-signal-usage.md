@@ -43,3 +43,8 @@ Copiez `config/breaking-signal.example.json` vers `config/breaking-signal.local.
 - Truth Social n'est pas couvert (pas d'accès gratuit légitime).
 - Les latences mesurées ici sont celles du pipeline interne ; la latence de publication → détection dépendra de la source réelle.
 - Pas de processus permanent : l'hébergement est à décider.
+
+## Validation de bout en bout (phase 0)
+`test/breakingSignalE2E.test.ts` : une annonce **fictive** est injectée, horodatée à la réception, la notification 1 sort en simulation sans attendre DETECTIVE, l'enquête ne démarre que si une adresse Solana valide (et un vrai mint) existe, la notification 2 porte résultats et limites, et les latences de détection, de première alerte et d'enquête sont mesurées séparément. Aucun appel réseau ni payant. Les écarts « publication → détection » sont SIMULÉS et ne représentent pas un délai réel sur X.
+
+**La phase 0 n'est pas opérationnelle 24 h/24** : il manque une source d'événements réelle (connexion X autorisée) et un hébergement permanent.
