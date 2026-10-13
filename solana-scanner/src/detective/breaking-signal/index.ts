@@ -6,3 +6,5 @@ export { SCENARIOS, scenarioById, SIM_ACCOUNT, xStatus, readEventsFile, watchPum
 export { checkMintQuick, findHomonyms } from "./onchainQuick.ts";
 export { verifyPost } from "./verify.ts";
 export { extractFromPost } from "./extract.ts";
+export { ENV_FILE, TOKEN_RE, parseEnvFile, mergeEnvText, writeEnvKeys, loadEnvFile, getMe, findChat, chatsFromUpdates, testNotification, checkConfigOffline } from "./telegramSetup.ts";
+export type { TgFetch, Notifier } from "./notify.ts";

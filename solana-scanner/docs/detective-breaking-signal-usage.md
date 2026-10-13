@@ -48,3 +48,15 @@ Copiez `config/breaking-signal.example.json` vers `config/breaking-signal.local.
 `test/breakingSignalE2E.test.ts` : une annonce **fictive** est injectée, horodatée à la réception, la notification 1 sort en simulation sans attendre DETECTIVE, l'enquête ne démarre que si une adresse Solana valide (et un vrai mint) existe, la notification 2 porte résultats et limites, et les latences de détection, de première alerte et d'enquête sont mesurées séparément. Aucun appel réseau ni payant. Les écarts « publication → détection » sont SIMULÉS et ne représentent pas un délai réel sur X.
 
 **La phase 0 n'est pas opérationnelle 24 h/24** : il manque une source d'événements réelle (connexion X autorisée) et un hébergement permanent.
+
+## Configuration Telegram guidée (sur VOTRE machine)
+Le jeton ne doit jamais passer par un chat ni par un argument de commande. Depuis un clone du dépôt, dans `solana-scanner/` :
+```
+npm run telegram -- token       # saisie masquée → vérifié (getMe) → .env.breaking (permissions 600, ignoré par Git), envoi réel DÉSACTIVÉ
+npm run telegram -- chat-id     # lit getUpdates, enregistre BREAKING_SIGNAL_TELEGRAM_CHAT_ID (plusieurs conversations: relancer avec --chat-id <id>)
+npm run telegram -- check --online
+npm run telegram -- test        # notification de test marquée SIMULATION, NON envoyée
+```
+`npm run breaking -- status` charge automatiquement `.env.breaking` (sans écraser vos variables) et n'affiche que les noms des variables.
+Pour autoriser l'envoi réel plus tard : mettre `BREAKING_SIGNAL_TELEGRAM_SEND=yes` dans `.env.breaking`. Un message de test réel exige en plus `npm run telegram -- test --send --confirm-send-test`.
+Si vous préférez que la session cloud lise le jeton, ajoutez-le dans les paramètres de l'environnement (variable d'environnement), jamais dans le chat.

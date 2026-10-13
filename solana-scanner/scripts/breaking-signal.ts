@@ -19,7 +19,7 @@ import { SolanaRpc } from "../src/onchain/rpc.ts";
 import { newMeter, runDetective } from "../src/detective/run.ts";
 import { withMode } from "../src/detective/modes.ts";
 import type { ReadRpc } from "../src/detective/meter.ts";
-import { SCENARIOS, SIM_ACCOUNT, checkMintQuick, createNotifier, findHomonyms, handleEvent, loadConfig, readEventsFile, scenarioById, telegramFromEnv, watchPumpPortal, xStatus } from "../src/detective/breaking-signal/index.ts";
+import { ENV_FILE, SCENARIOS, SIM_ACCOUNT, checkMintQuick, createNotifier, findHomonyms, handleEvent, loadConfig, loadEnvFile, readEventsFile, scenarioById, telegramFromEnv, watchPumpPortal, xStatus } from "../src/detective/breaking-signal/index.ts";
 import type { PipelineDeps } from "../src/detective/breaking-signal/index.ts";
 import type { BreakingResult, DetectiveBrief, OnchainQuick, PostEvent } from "../src/detective/breaking-signal/types.ts";
 
@@ -44,6 +44,7 @@ if (cmd === "help" || flag("help")) {
   process.exit(0);
 }
 
+const envLoaded = loadEnvFile(ENV_FILE, process.env); // .env.breaking (git-ignored); never overrides variables already set
 const { config: loaded, problems } = loadConfig(val("config"));
 const tg = telegramFromEnv(process.env);
 const notifier = createNotifier(tg, (u, i) => globalThis.fetch(u, i) as never);
@@ -53,6 +54,7 @@ if (cmd === "status") {
   console.log(`X: ${x.state} — ${x.message}`);
   console.log(`Telegram: ${notifier.mode === "live" ? "ENVOI RÉEL AUTORISÉ" : "SIMULATION"} — ${notifier.reason}`);
   console.log(`Liste blanche: ${loaded.accounts.length} compte(s) chargé(s)${problems.length ? ` · ${problems.join(" ; ")}` : ""}`);
+  if (envLoaded.length) console.log(`Variables chargées depuis ${ENV_FILE}: ${envLoaded.join(", ")} (valeurs masquées)`);
   console.log("Coût: 0 $ (aucun appel payant). Trading: aucun.");
   process.exit(0);
 }

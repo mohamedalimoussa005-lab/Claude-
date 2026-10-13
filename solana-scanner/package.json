@@ -28,7 +28,8 @@
     "outcomes:collect": "node --experimental-strip-types --no-warnings scripts/outcomes-collect.ts",
     "detective": "node --experimental-strip-types --no-warnings scripts/detective.ts",
     "radar": "node --experimental-strip-types --no-warnings scripts/social-radar.ts",
-    "breaking": "node --experimental-strip-types --no-warnings scripts/breaking-signal.ts"
+    "breaking": "node --experimental-strip-types --no-warnings scripts/breaking-signal.ts",
+    "telegram": "node --experimental-strip-types --no-warnings scripts/telegram-setup.ts"
   },
   "dependencies": {
     "react": "^18.3.1",
