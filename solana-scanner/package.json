@@ -27,7 +27,8 @@
     "outcomes:archive-legacy": "node --experimental-strip-types --no-warnings scripts/outcomes.ts archive-legacy",
     "outcomes:collect": "node --experimental-strip-types --no-warnings scripts/outcomes-collect.ts",
     "detective": "node --experimental-strip-types --no-warnings scripts/detective.ts",
-    "radar": "node --experimental-strip-types --no-warnings scripts/social-radar.ts"
+    "radar": "node --experimental-strip-types --no-warnings scripts/social-radar.ts",
+    "breaking": "node --experimental-strip-types --no-warnings scripts/breaking-signal.ts"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -1,0 +1,13 @@
+{
+  "accounts": [
+    {
+      "userId": "REMPLACER_PAR_L_IDENTIFIANT_NUMERIQUE_X",
+      "handle": "pseudo_affiche_seulement",
+      "label": "Nom lisible du compte officiel",
+      "officialDomains": ["exemple-officiel.com"]
+    }
+  ],
+  "fastCheckMs": 6000,
+  "fastCheckCalls": 6,
+  "watchedNames": ["trump", "melania"]
+}
