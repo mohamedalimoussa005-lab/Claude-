@@ -39,7 +39,7 @@ export const SOCIAL_CONFIG: SocialConfig = {
     weights: { completeness: 30, freshness: 20, verifiability: 30, sources: 20 },
     statusWeight: { FACT: 1, INDICATION: 0.6, HYPOTHESIS: 0.2, UNVERIFIED: 0 },
     anchorFactor: { transaction: 1, account: 0.85, none: 0.5 },
-    sourceReliability: { solana_rpc: 1, helius: 0.95, dexscreener: 0.7, x: 0.4 },
+    sourceReliability: { solana_rpc: 1, helius: 0.95, dexscreener: 0.7, x: 0.4, news: 0.5 },
     reliabilityShare: 0.8,
     expectedChecks: ["mint_state", "holder_distribution", "pool_state", "dex_pair", "transaction"],
     volatility: {

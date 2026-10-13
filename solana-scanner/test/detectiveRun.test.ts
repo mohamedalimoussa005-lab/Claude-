@@ -97,7 +97,7 @@ test("isolation: the existing scoring, final assessment, wallets, onchain, outco
 
 test("DETECTIVE performs no write RPC and no trade: no send/sign/simulate in its sources", () => {
   const root = new URL("../src/detective/", import.meta.url);
-  for (const f of readdirSync(root)) assert.doesNotMatch(readFileSync(new URL(f, root), "utf8"), /sendTransaction|signTransaction|simulateTransaction|requestAirdrop|(?<!\w)swap\((?!s\))|\.sign\(/, f);
+  for (const f of readdirSync(root, { recursive: true }).map(String).filter((x) => x.endsWith(".ts"))) assert.doesNotMatch(readFileSync(new URL(f, root), "utf8"), /sendTransaction|signTransaction|simulateTransaction|requestAirdrop|(?<!\w)swap\((?!s\))|\.sign\(/, f);
 });
 
 test("CLI: usage message without a mint, no network needed", () => {

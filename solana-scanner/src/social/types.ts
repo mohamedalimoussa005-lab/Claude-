@@ -27,7 +27,7 @@ export const STATUS_LABEL_FR: Record<EvidenceStatus, string> = {
   UNVERIFIED: "NON VÉRIFIÉ",
 };
 
-export const EVIDENCE_SOURCES = ["x", "dexscreener", "helius", "solana_rpc"] as const;
+export const EVIDENCE_SOURCES = ["x", "dexscreener", "helius", "solana_rpc", "news"] as const;
 export type EvidenceSource = (typeof EVIDENCE_SOURCES)[number];
 
 export const EVIDENCE_TYPES = [
