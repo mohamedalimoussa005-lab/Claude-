@@ -23,7 +23,7 @@ export interface PipelineDeps {
   seen?: Set<string>;
 }
 
-async function timebox<T>(p: Promise<T>, ms: number): Promise<T | null> {
+export async function timebox<T>(p: Promise<T>, ms: number): Promise<T | null> {
   let t: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([p, new Promise<null>((r) => (t = setTimeout(() => r(null), ms)))]);
@@ -52,7 +52,7 @@ export function delaysOf(t: StageTimes): Record<string, number | null> {
 
 export function latencyOf(event: PostEvent, t: StageTimes): LatencySummary {
   const d = (a: number | undefined, b: number | undefined) => (a === undefined || b === undefined ? null : b - a);
-  const simulated = event.provenance !== "x-official";
+  const simulated = event.provenance === "simulation" || event.provenance === "file";
   return {
     publicationToDetectionMs: d(t.published, t.received),
     publicationToDetectionIsSimulated: simulated,
@@ -60,7 +60,7 @@ export function latencyOf(event: PostEvent, t: StageTimes): LatencySummary {
     firstAlertMs: d(t.received, t.notified1),
     investigationMs: d(t.detectiveStarted, t.detectiveDone),
     firstToSecondAlertMs: d(t.notified1, t.notified2),
-    note: simulated ? "L'écart publication → détection est SIMULÉ (publication fictive): ce n'est pas un délai réel de détection sur X." : "Délai mesuré entre l'horodatage de la publication et sa réception par le système.",
+    note: simulated ? "L'écart publication → détection est SIMULÉ (publication fictive): ce n'est pas un délai réel de détection sur X." : event.provenance === "rss" ? "Délai réel entre la date de publication déclarée par le flux et la première lecture par le système (inclut le retard du flux et l'intervalle d'interrogation); ce n'est pas un délai de détection sur X." : "Délai mesuré entre l'horodatage de la publication et sa réception par le système.",
   };
 }
 

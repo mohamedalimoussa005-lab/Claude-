@@ -5,7 +5,7 @@
 
 import type { Finding } from "../types.ts";
 
-export type Provenance = "simulation" | "file" | "x-official";
+export type Provenance = "simulation" | "file" | "x-official" | "rss";
 export type PostKind = "original" | "reply" | "quote" | "repost";
 
 export interface PostEvent {

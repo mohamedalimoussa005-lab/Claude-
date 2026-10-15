@@ -1,0 +1,11 @@
+export { Watcher, DEFAULT_WATCH } from "./loop.ts";
+export type { WatchConfig, WatchDeps, TickResult } from "./loop.ts";
+export { WATCH_FEEDS, PoliteFeedClient } from "./feeds.ts";
+export type { WatchFeed, FeedFetcher, FeedStatus } from "./feeds.ts";
+export { scoreArticle, DEFAULT_TERMS } from "./relevance.ts";
+export type { WatchTerms } from "./relevance.ts";
+export { verifyNews, RANK } from "./verifyNews.ts";
+export { StateStore, emptyState } from "./state.ts";
+export { createSimulation, SIM_TICKS, SIM_SCRIPT } from "./simulation.ts";
+export { sendFirstAlert, formatNewsAlert1, formatNewsAlert2 } from "./signal.ts";
+export type { SignalResult, NewsSignal } from "./signal.ts";

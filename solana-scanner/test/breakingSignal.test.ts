@@ -181,7 +181,7 @@ test("X: never monitored in phase 0 — no connection claim, a token in the envi
   assert.equal(s.state, "JETON PRÉSENT, NON UTILISÉ");
   assert.doesNotMatch(JSON.stringify(s), /secret-value/);
   const dir = new URL("../src/detective/breaking-signal/", import.meta.url);
-  for (const f of readdirSync(dir)) {
+  for (const f of readdirSync(dir, { recursive: true }).map(String).filter((x) => x.endsWith(".ts"))) {
     const src = readFileSync(new URL(f, dir), "utf8");
     assert.doesNotMatch(src, /api\.x\.com|api\.twitter\.com|nitter|xcancel|apify|scoring\/|sendTransaction|signTransaction/i, f);
   }

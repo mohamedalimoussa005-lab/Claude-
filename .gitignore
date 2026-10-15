@@ -19,3 +19,6 @@ detective-reports/
 
 # Breaking Signal local config (numeric X ids, never secrets)
 solana-scanner/config/*.local.json
+
+# Breaking Signal watcher runtime files
+solana-scanner/.breaking-*

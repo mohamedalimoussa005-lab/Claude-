@@ -29,7 +29,12 @@
     "detective": "node --experimental-strip-types --no-warnings scripts/detective.ts",
     "radar": "node --experimental-strip-types --no-warnings scripts/social-radar.ts",
     "breaking": "node --experimental-strip-types --no-warnings scripts/breaking-signal.ts",
-    "telegram": "node --experimental-strip-types --no-warnings scripts/telegram-setup.ts"
+    "telegram": "node --experimental-strip-types --no-warnings scripts/telegram-setup.ts",
+    "watch:start": "./scripts/breaking-watch.sh start",
+    "watch:stop": "./scripts/breaking-watch.sh stop",
+    "watch:status": "./scripts/breaking-watch.sh status",
+    "watch:logs": "./scripts/breaking-watch.sh logs",
+    "watch:simulate": "node --experimental-strip-types --no-warnings scripts/breaking-signal.ts watch --simulate"
   },
   "dependencies": {
     "react": "^18.3.1",
