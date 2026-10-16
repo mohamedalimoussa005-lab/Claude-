@@ -40,8 +40,25 @@ test("phases 0-2 make no network call", () => {
   }
 });
 
+test("nothing under src/ can reach the network or the server RPC: the only network factory is scripts/smart-money-live.ts", () => {
+  for (const file of walk(OWN)) {
+    const src = readFileSync(file, "utf8");
+    assert.ok(!/globalThis\.fetch/.test(src), `${relative(ROOT, file)} uses the real fetch`);
+    assert.ok(!/rpc\/serverRpc|history\/helius\.ts|history\/publicRpc/.test(src), `${relative(ROOT, file)} builds a network client`);
+  }
+  const live = readFileSync(join(ROOT, "scripts", "smart-money-live.ts"), "utf8");
+  assert.match(live, /budgetedFetch\(/);
+  for (const ctor of ["new HeliusHistoryProvider(", "createServerSolanaRpc("]) {
+    let from = 0;
+    for (let at = live.indexOf(ctor, from); at >= 0; at = live.indexOf(ctor, from)) {
+      assert.match(live.slice(at, live.indexOf(");", at)), /fetchImpl: guarded/, `${ctor} must receive the guarded fetch`);
+      from = at + ctor.length;
+    }
+  }
+});
+
 test("nothing outside the agent imports it (DETECTIVE / BREAKING SIGNAL are unaffected)", () => {
-  const allowed = (rel: string) => rel.startsWith("src/smart-money/") || rel.startsWith("test/smart-money/") || rel.startsWith("scripts/smart-money.");
+  const allowed = (rel: string) => rel.startsWith("src/smart-money/") || rel.startsWith("test/smart-money/") || rel.startsWith("scripts/smart-money");
   for (const dir of ["src", "server", "scripts", "test"]) {
     for (const file of walk(join(ROOT, dir))) {
       const rel = relative(ROOT, file).split(sep).join("/");

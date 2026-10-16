@@ -77,6 +77,8 @@ export interface OpenPosition {
   /** Needs a supplied mark price and a fully known cost; otherwise null (UNKNOWN, never 0). */
   unrealized: { value: number; mark: MarkPrice } | null;
   unknownReasons: UnknownReason[];
+  /** Signatures of the transactions behind this position (the evidence). */
+  signatures: string[];
 }
 
 export interface PnlResult {

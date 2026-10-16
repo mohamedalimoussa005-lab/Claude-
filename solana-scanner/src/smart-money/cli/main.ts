@@ -7,9 +7,12 @@
  *   smart-money run [--once] [--interval SEC]   idle simulated loop: heartbeat only, no network
  *   smart-money events [--after SEQ] [--limit N]   read the outbox (as a consumer would)
  *   smart-money demo [--dir DIR]          pipeline on FICTIONAL data
+ *   smart-money wallet ADDR… (--demo | --offline FILE | --dry-run | --live …)   see cli/wallet.ts
+ *   smart-money estimate [--wallets N --max-tx N …]   cost estimate, sends nothing
+ *   smart-money preflight                  offline checklist before any live trial
  *   smart-money analyze FILE --wallet ADDR [--complete] [--emit]   PnL from saved HistoryTx JSON (array or {txs})
  *
- * `--live` is refused until a later phase. No Telegram, no trading, no API call.
+ * Only `wallet --live` can reach the network, behind a guard (explicit budget, 3 wallets max). No Telegram, no trading.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -20,6 +23,8 @@ import { profileEvent } from "../pnl/events.ts";
 import { formatProfile } from "../pnl/format.ts";
 import { analyzeWallet } from "../pnl/profile.ts";
 import { SmartMoneyStore } from "../store/store.ts";
+import { estimateCommand, preflightCommand, walletCommand } from "./wallet.ts";
+import type { WalletDeps } from "./wallet.ts";
 import type { HistoryTx } from "../../history/types.ts";
 
 const flag = (a: string[], name: string) => a.includes(name);
@@ -37,10 +42,10 @@ const alive = (pid: number) => {
   }
 };
 
-export async function main(argv: string[], env: Record<string, string | undefined> = process.env, log: (s: string) => void = console.log): Promise<number> {
+export async function main(argv: string[], env: Record<string, string | undefined> = process.env, log: (s: string) => void = console.log, deps: WalletDeps = {}): Promise<number> {
   const [cmd = "help", ...rest] = argv;
-  if (flag(argv, "--live")) {
-    log("--live n'est pas disponible dans cette version : aucun appel réseau avant la phase 3 (et sans accord explicite).");
+  if (flag(argv, "--live") && cmd !== "wallet") {
+    log("--live n'existe que pour la commande `wallet` (derrière sa garde : budget explicite, 3 wallets maximum).");
     return 2;
   }
   const config = loadConfig(env);
@@ -105,6 +110,12 @@ export async function main(argv: string[], env: Record<string, string | undefine
       if (corruptLines || skipped) log(`(ignorées : ${corruptLines} lignes illisibles, ${skipped} événements invalides)`);
       return 0;
     }
+    case "wallet":
+      return walletCommand(rest, { config, store, env, log, deps });
+    case "estimate":
+      return estimateCommand(rest, { config, store, env, log, deps });
+    case "preflight":
+      return preflightCommand(rest, { config, store, env, log, deps });
     case "demo": {
       await runDemo(log, { dir: opt(rest, "--dir") });
       return 0;

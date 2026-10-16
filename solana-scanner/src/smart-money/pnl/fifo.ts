@@ -166,7 +166,7 @@ function openPosition(s: State, marks: Record<string, MarkPrice>): OpenPosition 
   const mark = marks[s.mint];
   const unrealized = mark && quote !== null && mark.quote === quote && !hasUnknownLots && knownCost !== null && s.reasons.size === 0 && !s.rentUncertain ? { value: amount * mark.price - knownCost, mark } : null;
   const realizedSoFar = quote !== null && s.reasons.size === 0 && !s.rentUncertain ? s.matchedProceeds - s.matchedCost : null;
-  return { mint: s.mint, status: "OPEN", openedAt: s.openedAt, amount, knownCost, hasUnknownLots, quote, realizedSoFar, unrealized, unknownReasons: [...s.reasons] };
+  return { mint: s.mint, status: "OPEN", openedAt: s.openedAt, amount, knownCost, hasUnknownLots, quote, realizedSoFar, unrealized, unknownReasons: [...s.reasons], signatures: [...s.signatures] };
 }
 
 export function computePnl(ledger: Ledger, o: FifoOptions): PnlResult {

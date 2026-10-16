@@ -31,10 +31,10 @@ test("init / run --once / events / status work end to end, offline", async () =>
   assert.match((await cli(env, "status")).out, /Événements : 2/);
 });
 
-test("--live is refused (no network before phase 3)", async () => {
+test("--live is refused outside the guarded `wallet` command", async () => {
   const r = await cli({ SMART_MONEY_DIR: tmpDir() }, "run", "--live");
   assert.equal(r.code, 2);
-  assert.match(r.out, /aucun appel réseau/);
+  assert.match(r.out, /n'existe que pour la commande `wallet`/);
 });
 
 test("config exposes the provisional thresholds and honours overrides; bad values are rejected", async () => {

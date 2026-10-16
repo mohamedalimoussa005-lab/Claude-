@@ -5,7 +5,7 @@ import type { HistoryExtras } from "../../wallets/types.ts";
 import { DEFAULT_THRESHOLDS } from "../config.ts";
 import type { SmartMoneyConfig } from "../config.ts";
 import { buildLedger } from "../ledger/build.ts";
-import type { HistoryCoverage } from "../ledger/types.ts";
+import type { HistoryCoverage, Ledger } from "../ledger/types.ts";
 import { computePnl } from "./fifo.ts";
 import { consistency, winRate } from "./stats.ts";
 import type { Consistency, WinRate } from "./stats.ts";
@@ -99,9 +99,9 @@ export interface AnalyzeOptions {
 }
 
 /** The whole phase 1 + 2 pipeline for one wallet. */
-export function analyzeWallet(wallet: string, txs: HistoryTx[], o: AnalyzeOptions): { pnl: PnlResult; profile: WalletPnlProfile } {
+export function analyzeWallet(wallet: string, txs: HistoryTx[], o: AnalyzeOptions): { ledger: Ledger; pnl: PnlResult; profile: WalletPnlProfile } {
   const thresholds = o.config?.thresholds ?? DEFAULT_THRESHOLDS;
   const ledger = buildLedger(wallet, txs, { thresholds, tipAccounts: o.config?.tipAccounts });
   const pnl = computePnl(ledger, { coverage: o.coverage, thresholds, marks: o.marks });
-  return { pnl, profile: profileFromPnl(pnl, { thresholds }) };
+  return { ledger, pnl, profile: profileFromPnl(pnl, { thresholds }) };
 }
