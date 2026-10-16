@@ -34,7 +34,13 @@
     "watch:stop": "./scripts/breaking-watch.sh stop",
     "watch:status": "./scripts/breaking-watch.sh status",
     "watch:logs": "./scripts/breaking-watch.sh logs",
-    "watch:simulate": "node --experimental-strip-types --no-warnings scripts/breaking-signal.ts watch --simulate"
+    "watch:simulate": "node --experimental-strip-types --no-warnings scripts/breaking-signal.ts watch --simulate",
+    "smartmoney": "node --experimental-strip-types --no-warnings scripts/smart-money.ts",
+    "smartmoney:demo": "node --experimental-strip-types --no-warnings scripts/smart-money.ts demo",
+    "smartmoney:start": "./scripts/smart-money.sh start",
+    "smartmoney:stop": "./scripts/smart-money.sh stop",
+    "smartmoney:status": "./scripts/smart-money.sh status",
+    "test:smart-money": "node --experimental-strip-types --no-warnings --test test/smart-money/*.test.ts"
   },
   "dependencies": {
     "react": "^18.3.1",

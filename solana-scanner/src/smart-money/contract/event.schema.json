@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "smart-money.event/1",
+  "title": "SMART MONEY TRACKER event, schema 1",
+  "description": "One line of outbox/events.jsonl. Additive evolution only: unknown properties must be ignored by readers.",
+  "type": "object",
+  "required": ["schemaVersion", "eventId", "seq", "emittedAt", "source", "kind", "subject", "evidence", "evidenceTier", "dataQuality", "criteriaVersion", "notAdvice", "simulated", "data"],
+  "properties": {
+    "schemaVersion": { "const": "smart-money.event/1" },
+    "eventId": { "type": "string", "pattern": "^sm1_[0-9a-f]{32}$" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "emittedAt": { "type": "number" },
+    "source": { "const": "smart-money-tracker" },
+    "kind": { "enum": ["agent.heartbeat", "wallet.profile_computed", "wallet.qualified", "wallet.demoted", "wallet.buy", "wallet.sell", "wallet.bot_flagged", "wallet.cluster_detected", "convergence"] },
+    "subject": { "type": "object", "required": ["wallet", "mint"], "properties": { "wallet": { "type": ["string", "null"] }, "mint": { "type": ["string", "null"] } } },
+    "evidence": {
+      "type": "array",
+      "items": { "type": "object", "required": ["signature", "slot", "time"], "properties": { "signature": { "type": "string" }, "slot": { "type": ["number", "null"] }, "time": { "type": ["number", "null"] } } }
+    },
+    "evidenceTier": { "enum": ["VERIFIED", "INFERRED", "HYPOTHESIS"] },
+    "dataQuality": { "type": "object", "required": ["level", "unknowns"], "properties": { "level": { "enum": ["HIGH", "MEDIUM", "LOW", "UNKNOWN"] }, "unknowns": { "type": "array", "items": { "type": "string" } } } },
+    "criteriaVersion": { "type": "string" },
+    "notAdvice": { "const": true },
+    "simulated": { "type": "boolean" },
+    "data": {}
+  }
+}

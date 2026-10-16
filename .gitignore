@@ -22,3 +22,7 @@ solana-scanner/config/*.local.json
 
 # Breaking Signal watcher runtime files
 solana-scanner/.breaking-*
+
+# SMART MONEY TRACKER runtime (memory, pid, log) — never committed
+solana-scanner/data/smart-money/
+solana-scanner/.smart-money.*
