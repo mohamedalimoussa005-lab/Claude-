@@ -10,6 +10,7 @@
  *   smart-money wallet ADDR… (--demo | --offline FILE | --dry-run | --live …)   see cli/wallet.ts
  *   smart-money estimate [--wallets N --max-tx N …]   cost estimate, sends nothing
  *   smart-money diagnose [--wallet ADDR] [--json] [--out FILE]   offline, read-only diagnostic of collected data
+ *   smart-money compare [--wallet ADDR] [--json] [--out FILE]   offline before/after of the accounting engine on the cache
  *   smart-money preflight                  offline checklist before any live trial
  *   smart-money analyze FILE --wallet ADDR [--complete] [--emit]   PnL from saved HistoryTx JSON (array or {txs})
  *
@@ -24,6 +25,7 @@ import { profileEvent } from "../pnl/events.ts";
 import { formatProfile } from "../pnl/format.ts";
 import { analyzeWallet } from "../pnl/profile.ts";
 import { SmartMoneyStore } from "../store/store.ts";
+import { compareCommand } from "./compare.ts";
 import { diagnoseCommand } from "./diagnose.ts";
 import { estimateCommand, preflightCommand, walletCommand } from "./wallet.ts";
 import type { WalletDeps } from "./wallet.ts";
@@ -116,6 +118,8 @@ export async function main(argv: string[], env: Record<string, string | undefine
       return walletCommand(rest, { config, store, env, log, deps });
     case "estimate":
       return estimateCommand(rest, { config, store, env, log, deps });
+    case "compare":
+      return compareCommand(rest, { config, env, log, now: deps.now });
     case "diagnose":
       return diagnoseCommand(rest, { config, env, log, now: deps.now });
     case "preflight":

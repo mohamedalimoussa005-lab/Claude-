@@ -99,15 +99,13 @@ export interface Orphans extends Section {
   engineCrossCheck: { engineTokens: number; walkerTokens: number; agree: boolean };
 }
 
-export type RentCause = "sponsored_fee_payer" | "incomplete_signers" | "co_signer" | "non_standard_rent_like_with_ata";
-export type RentVerdict = "likely_false_positive_counterparty" | "likely_real_account_event" | "funding_unattributed" | "undetermined";
+export type RentCause = "incomplete_signers" | "funder_ambiguous" | "refund_destination_ambiguous" | "standard_size_account_not_wallet_ata";
+export type RentVerdict = "signers_unavailable" | "wallet_deposit_unproven" | "refund_destination_unproven" | "unrecognised_standard_size_account";
 
 export interface RentAccount {
   account: string;
   lamports: number;
-  role: "wallet" | "co_signer" | "fee_payer" | "standard_rent_created" | "standard_rent_closed" | "rent_like_band" | "other";
-  /** The account also owns a token balance that moved: a pool / bonding curve, not a user token account. */
-  isTokenOwner: boolean;
+  role: "wallet" | "fee_payer" | "co_signer" | "pool" | "wallet_ata_created" | "wallet_ata_closed" | "standard_size_not_wallet_ata" | "other";
 }
 
 export interface RentCase extends TxRef {
@@ -117,16 +115,17 @@ export interface RentCase extends TxRef {
   walletLamports: number;
   feeLamports: number;
   tradingSol: number | null;
+  swapProof: "counterparty_payment" | "wallet_side_only" | null;
   signerCount: number;
   signersComplete: boolean;
   feePayerIsWallet: boolean;
-  coSigners: { account: string; netLamports: number }[];
-  ataProgramRan: boolean;
-  standardCreated: number;
-  standardClosed: number;
+  /** Fee payer / co-signers that are not the wallet, with what they net. */
+  thirdParties: { account: string; role: "fee_payer" | "co_signer"; netLamports: number }[];
+  /** Counterparties of the traded token (pools, curves): never read as rent. */
+  pools: { account: string; lamports: number }[];
+  funder: "wallet" | "third_party" | "unknown" | null;
   causes: RentCause[];
   verdict: RentVerdict;
-  /** The wallet moved ≤ 0.005 SOL (fee included): small enough for a pool account's SOL delta to look like a rent. */
   microTrade: boolean;
   accounts: RentAccount[];
   notes: string[];

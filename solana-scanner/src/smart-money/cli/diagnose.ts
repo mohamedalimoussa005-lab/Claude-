@@ -6,12 +6,11 @@
  *   diagnose [--wallet ADDR] [--dir DIR] [--json] [--out FILE [--overwrite]] [--all] [--target-tx N]
  */
 
-import { existsSync, writeFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
 import type { SmartMoneyConfig } from "../config.ts";
 import { loadLocalData, walletsIn } from "../diagnose/load.ts";
 import { assertNoSecrets, diagnoseWallet } from "../diagnose/run.ts";
 import { formatDiagnostic } from "../diagnose/format.ts";
+import { writeJsonOut } from "./outFile.ts";
 
 interface Ctx {
   config: SmartMoneyConfig;
@@ -50,20 +49,8 @@ export async function diagnoseCommand(args: string[], ctx: Ctx): Promise<number>
     ctx.log(`Rapport refusé : ${(e as Error).message}`);
     return 1;
   }
-  const out = opt(args, "--out");
-  if (out) {
-    const target2 = resolve(out);
-    if (!relative(resolve(dir), target2).startsWith("..")) {
-      ctx.log("--out ne peut pas pointer dans le dossier de données (lecture seule).");
-      return 2;
-    }
-    if (existsSync(target2) && !args.includes("--overwrite")) {
-      ctx.log("--out existe déjà : ajoutez --overwrite pour le remplacer.");
-      return 2;
-    }
-    writeFileSync(target2, `${json}\n`, { mode: 0o600 });
-    ctx.log(`Rapport JSON écrit : ${out}`);
-  }
+  const refused = writeJsonOut(args, dir, json, ctx.log);
+  if (refused !== null) return refused;
   ctx.log(args.includes("--json") ? json : text);
   return 0;
 }

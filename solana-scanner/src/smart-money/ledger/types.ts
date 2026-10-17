@@ -33,6 +33,14 @@ interface Base {
   /** "uncertain": rent may be mixed into the SOL amounts and could not be separated. */
   rentStatus: RentStatus;
   flags: string[];
+  /** Engine v2. Rent deposited by someone other than the wallet: outside its cash flow, never in its cost. */
+  thirdPartyRentLamports?: number;
+  /** Engine v2. Why the rent is uncertain (codes). */
+  rentReasons?: string[];
+  /** Engine v2. "counterparty_payment": a pool received / paid the quote asset; "wallet_side_only": only the wallet's own balances were available. */
+  swapProof?: "counterparty_payment" | "wallet_side_only";
+  /** Engine v2. Short codes explaining how this entry was classified (used to explain reclassifications). */
+  reasons?: string[];
 }
 
 export interface TradeEntry extends Base {
@@ -54,6 +62,8 @@ export interface TradeEntry extends Base {
   allInSol: number | null;
   /** USD trades only: SOL fee + tip that cannot be converted without a rate (never invented). */
   unconvertedFeeSol: number;
+  /** Engine v2. What the pools themselves received (+) or paid (−), in the quote asset: the market-side amount. */
+  poolSideAmount?: number | null;
 }
 
 export interface TransferEntry extends Base {
@@ -66,7 +76,7 @@ export interface TransferEntry extends Base {
   reason: "not_signer" | "no_swap_program" | "no_quote_leg";
 }
 
-export type UndecodableReason = "multi_token" | "token_to_token" | "ambiguous_quote" | "quote_wrong_direction";
+export type UndecodableReason = "multi_token" | "token_to_token" | "ambiguous_quote" | "quote_wrong_direction" | "payment_not_with_wallet";
 
 export interface UndecodableEntry extends Base {
   kind: "undecodable";

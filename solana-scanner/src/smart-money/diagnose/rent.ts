@@ -1,61 +1,33 @@
 /**
- * Why was the rent of a transaction left "uncertain"? This re-reads the SAME rules as ledger/rent.ts `detectRent` but
- * names the branch that fired, with the evidence (signers, fee payer, accounts and their SOL movements). It changes
- * nothing in the accounting. `explainRent(...).status` is tested to equal `detectRent(...).status`.
+ * Why is the rent of a transaction STILL "uncertain" under engine v2? The facts come from the engine itself
+ * (`assessRent`, `swapEvidence`): this module only adds the account-by-account picture (wallet, third parties, pools,
+ * created / closed token accounts) so that each remaining case can be checked by hand. It changes nothing.
  */
 
 import type { HistoryTx } from "../../history/types.ts";
-import { ATA_PROGRAM, TOKEN_ACCOUNT_RENT_LAMPORTS } from "../ledger/rent.ts";
-import type { RentStatus } from "../ledger/rent.ts";
-import type { Ledger } from "../ledger/types.ts";
+import { swapEvidence, thirdParties } from "../ledger/evidence.ts";
+import { assessRent } from "../ledger/rent.ts";
+import type { Ledger, LedgerEntry } from "../ledger/types.ts";
 import { ref } from "./window.ts";
 import type { RentAccount, RentCase, RentCause, RentDiagnosis, RentVerdict } from "./types.ts";
 
-const BAND: [number, number] = [890_880, 3_000_000];
-/**
- * Under ~3 mSOL traded, a pool account's own SOL delta falls in the rent-like band. A wallet that moved less than
- * this many lamports (fee included) is called a micro trade, whatever the ledger made of it.
- */
+/** The wallet moved ≤ 0.005 SOL (fee included). */
 const MICRO_WALLET_LAMPORTS = 5_000_000;
 
-export interface RentExplanation {
-  status: RentStatus;
-  causes: RentCause[];
-  standardCreated: number;
-  standardClosed: number;
-  band: { account: string; lamports: number }[];
-  ataProgramRan: boolean;
-  selfFunded: boolean;
-}
+const VERDICT_OF: Record<RentCause, RentVerdict> = {
+  incomplete_signers: "signers_unavailable",
+  funder_ambiguous: "wallet_deposit_unproven",
+  refund_destination_ambiguous: "refund_destination_unproven",
+  standard_size_account_not_wallet_ata: "unrecognised_standard_size_account",
+};
+const PRIORITY: RentCause[] = ["incomplete_signers", "funder_ambiguous", "refund_destination_ambiguous", "standard_size_account_not_wallet_ata"];
 
-export function explainRent(tx: HistoryTx, wallet: string): RentExplanation {
-  let created = 0;
-  let closed = 0;
-  const band: RentExplanation["band"] = [];
-  for (const [account, delta] of Object.entries(tx.lamportDeltas)) {
-    if (account === wallet) continue;
-    if (delta === TOKEN_ACCOUNT_RENT_LAMPORTS) created++;
-    else if (delta === -TOKEN_ACCOUNT_RENT_LAMPORTS) closed++;
-    else if (delta >= BAND[0] && delta <= BAND[1]) band.push({ account, lamports: delta });
-  }
-  const ata = tx.programIds.includes(ATA_PROGRAM);
-  const selfFunded = tx.signersComplete && tx.signers.length === 1 && tx.signers[0] === wallet && tx.feePayer === wallet;
-  const base = { standardCreated: created, standardClosed: closed, band, ataProgramRan: ata, selfFunded };
-  if (created === 0 && closed === 0) {
-    return ata && band.length > 0 ? { ...base, status: "uncertain", causes: ["non_standard_rent_like_with_ata"] } : { ...base, status: "none", causes: [] };
-  }
-  const causes: RentCause[] = [];
-  if (!selfFunded) {
-    if (tx.feePayer !== wallet) causes.push("sponsored_fee_payer");
-    if (!tx.signersComplete) causes.push("incomplete_signers");
-    if (tx.signersComplete && tx.signers.length !== 1) causes.push("co_signer");
-    return { ...base, status: "uncertain", causes };
-  }
-  if (ata && band.length > 0) return { ...base, status: "uncertain", causes: ["non_standard_rent_like_with_ata"] };
-  return { ...base, status: "identified", causes: [] };
-}
-
-const short = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;
+const NOTE: Record<RentCause, string> = {
+  incomplete_signers: "décodage enrichi : les co-signataires ne sont pas listés, impossible de savoir qui a financé",
+  funder_ambiguous: "un autre signataire a un solde net sortant au moins égal au dépôt : il a pu le financer à la place du wallet",
+  refund_destination_ambiguous: "le compte du wallet est fermé, mais le destinataire du remboursement n'est pas prouvé (le wallet n'a pas signé, ou un autre signataire a reçu une somme équivalente)",
+  standard_size_account_not_wallet_ata: "un compte au montant exact d'un loyer de compte de token a bougé, mais ce n'est PAS un compte de token associé du wallet : piste, pas preuve",
+};
 
 export function diagnoseRent(ledger: Ledger, wallet: string, bySignature: Map<string, HistoryTx>): RentDiagnosis {
   const cases: RentCase[] = [];
@@ -69,61 +41,42 @@ export function diagnoseRent(ledger: Ledger, wallet: string, bySignature: Map<st
       missingTx.push(e.signature);
       continue;
     }
-    const x = explainRent(tx, wallet);
-    const tokenOwners = new Set(Object.keys(tx.tokenDeltas));
-    const coSigners = tx.signers.filter((s) => s !== wallet).map((account) => ({ account, netLamports: tx.lamportDeltas[account] ?? 0 }));
-    const tradingSol = e.kind === "trade" && e.quote.asset === "SOL" ? e.quote.amount : null;
-    const walletLamports = tx.lamportDeltas[wallet] ?? 0;
-    const micro = Math.abs(walletLamports) <= MICRO_WALLET_LAMPORTS;
-    const notes: string[] = [];
-
-    // Counterparty test for rent-like accounts: a pool / bonding curve owns tokens that moved and its SOL moves with the trade.
-    if (micro && e.kind === "transfer" && walletLamports < 0) notes.push("classé « transfert entrant » (SOL sous le seuil de bruit de 0,005) alors qu'il s'agit peut-être d'un micro-achat : son coût est aujourd'hui INCONNU");
-    const counterparty = (b: { account: string; lamports: number }) => tokenOwners.has(b.account) || (tradingSol !== null && Math.abs(Math.abs(b.lamports) - tradingSol * 1e9) <= Math.max(10_000, tradingSol * 1e9 * 0.02));
-    let verdict: RentVerdict = "undetermined";
-    if (x.causes.includes("non_standard_rent_like_with_ata")) {
-      const cp = x.band.filter(counterparty);
-      if (cp.length === x.band.length) {
-        verdict = "likely_false_positive_counterparty";
-        notes.push("le compte « proche d'un loyer » possède aussi un solde de token qui a bougé, ou son delta SOL égale le montant du trade : contrepartie (pool / courbe), pas un compte créé");
-      } else {
-        verdict = "likely_real_account_event";
-        notes.push("compte de taille non standard (ex. Token-2022) sans lien avec la contrepartie : création ou fermeture réelle probable");
-      }
-    } else if (x.causes.length > 0) {
-      verdict = "funding_unattributed";
-      if (coSigners.length > 0) notes.push(coSigners.every((c) => c.netLamports === 0) ? "co-signataire(s) sans solde net : clé temporaire probable (compte jetable), le financement par le wallet est plausible mais non prouvé" : "co-signataire(s) avec solde net non nul : un tiers a pu financer ou recevoir");
-      if (tx.feePayer !== wallet) notes.push("frais payés par un autre compte");
-      if (!tx.signersComplete) notes.push("signataires incomplets (décodage enrichi) : impossible de savoir qui a signé");
-    }
-
+    const a = assessRent(tx, wallet);
+    const mint = mintOf(e);
+    const pools = mint && e.kind !== "undecodable" ? swapEvidence(tx, wallet, mint, tokenSign(e)).counterparties.map((c) => ({ account: c.account, lamports: c.lamports })) : [];
+    const tps = thirdParties(tx, wallet);
+    const poolSet = new Set(pools.map((p) => p.account));
+    const created = new Set(a.created.map((c) => c.account));
+    const closed = new Set(a.closed.map((c) => c.account));
+    const unattributed = new Set(a.unattributed.map((u) => u.account));
+    const roleOf = (account: string): RentAccount["role"] =>
+      account === wallet ? "wallet" : tx.feePayer === account ? "fee_payer" : tx.signers.includes(account) ? "co_signer" : poolSet.has(account) ? "pool" : created.has(account) ? "wallet_ata_created" : closed.has(account) ? "wallet_ata_closed" : unattributed.has(account) ? "standard_size_not_wallet_ata" : "other";
     const accounts: RentAccount[] = Object.entries(tx.lamportDeltas)
-      .map(([account, lamports]) => {
-        const role: RentAccount["role"] =
-          account === wallet ? "wallet" : tx.feePayer === account ? "fee_payer" : tx.signers.includes(account) ? "co_signer" : lamports === TOKEN_ACCOUNT_RENT_LAMPORTS ? "standard_rent_created" : lamports === -TOKEN_ACCOUNT_RENT_LAMPORTS ? "standard_rent_closed" : x.band.some((b) => b.account === account) ? "rent_like_band" : "other";
-        return { account, lamports, role, isTokenOwner: account !== wallet && tokenOwners.has(account) };
-      })
-      .sort((a, b) => Math.abs(b.lamports) - Math.abs(a.lamports))
+      .map(([account, lamports]) => ({ account, lamports, role: roleOf(account) }))
+      .sort((x, y) => Math.abs(y.lamports) - Math.abs(x.lamports))
       .slice(0, 8);
-
+    const causes = a.reasons as RentCause[];
+    const top = PRIORITY.find((c) => causes.includes(c)) ?? causes[0];
+    const walletLamports = tx.lamportDeltas[wallet] ?? 0;
+    const notes = causes.map((c) => NOTE[c]);
     cases.push({
       ...ref(e),
       kind: e.kind,
       side: e.kind === "trade" ? e.side : null,
-      mint: e.kind === "undecodable" ? (e.legs[0]?.mint ?? null) : e.mint,
+      mint,
       walletLamports,
       feeLamports: tx.feePayer === wallet ? tx.fee : 0,
-      tradingSol,
+      tradingSol: e.kind === "trade" && e.quote.asset === "SOL" ? e.quote.amount : null,
+      swapProof: e.swapProof ?? null,
       signerCount: tx.signers.length,
       signersComplete: tx.signersComplete,
       feePayerIsWallet: tx.feePayer === wallet,
-      coSigners,
-      ataProgramRan: x.ataProgramRan,
-      standardCreated: x.standardCreated,
-      standardClosed: x.standardClosed,
-      causes: x.causes,
-      verdict,
-      microTrade: micro,
+      thirdParties: tps,
+      pools,
+      funder: a.funder,
+      causes,
+      verdict: VERDICT_OF[top],
+      microTrade: Math.abs(walletLamports) <= MICRO_WALLET_LAMPORTS,
       accounts,
       notes,
     });
@@ -145,4 +98,12 @@ export function diagnoseRent(ledger: Ledger, wallet: string, bySignature: Map<st
     cases,
   };
 }
-export { short };
+
+function mintOf(e: LedgerEntry): string | null {
+  return e.kind === "undecodable" ? (e.legs[0]?.mint ?? null) : e.mint;
+}
+function tokenSign(e: Exclude<LedgerEntry, { kind: "undecodable" }>): bigint {
+  return e.kind === "trade" ? (e.side === "buy" ? 1n : -1n) : e.direction === "in" ? 1n : -1n;
+}
+
+export const short = (a: string) => `${a.slice(0, 4)}…${a.slice(-4)}`;

@@ -18,7 +18,7 @@ function history(n: number): HistoryTx[] {
   const out: HistoryTx[] = [];
   for (let i = 0; i < n / 2; i++) {
     const t = DEMO_START + i * 2 * H;
-    out.push(buyCreatingAta(`b${String(i).padStart(3, "0")}`, t, W, addr(30 + i), 1000, 1, addr(160 + i)), sellClosingAta(`s${String(i).padStart(3, "0")}`, t + H, W, addr(30 + i), 1000, 2, addr(160 + i)));
+    out.push(buyCreatingAta(`b${String(i).padStart(3, "0")}`, t, W, addr(30 + i), 1000, 1), sellClosingAta(`s${String(i).padStart(3, "0")}`, t + H, W, addr(30 + i), 1000, 2));
   }
   return out;
 }

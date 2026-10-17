@@ -11,12 +11,12 @@ const CAT: Record<OrphanGroup["category"], string> = {
   rounding: "arrondi",
 };
 const VERDICT = {
-  likely_false_positive_counterparty: "FAUX POSITIF probable (contrepartie)",
-  likely_real_account_event: "création/fermeture RÉELLE probable",
-  funding_unattributed: "financement non attribuable",
-  undetermined: "indéterminé",
+  signers_unavailable: "signataires indisponibles",
+  wallet_deposit_unproven: "dépôt du wallet non prouvé",
+  refund_destination_unproven: "remboursement non prouvé",
+  unrecognised_standard_size_account: "compte de loyer inconnu (pas un ATA du wallet)",
 } as const;
-const CAUSE = { sponsored_fee_payer: "frais payés par un tiers", incomplete_signers: "signataires incomplets", co_signer: "co-signataire", non_standard_rent_like_with_ata: "compte « type loyer » non standard + ATA" } as const;
+const CAUSE = { incomplete_signers: "signataires incomplets", funder_ambiguous: "financeur ambigu", refund_destination_ambiguous: "destinataire du remboursement ambigu", standard_size_account_not_wallet_ata: "montant de loyer sur un compte qui n'est pas un ATA du wallet" } as const;
 
 export function formatDiagnostic(r: DiagnosticReport, o: { all?: boolean } = {}): string {
   const lim = (xs: unknown[]) => (o.all ? xs.length : Math.min(xs.length, 12));
@@ -77,8 +77,9 @@ export function formatDiagnostic(r: DiagnosticReport, o: { all?: boolean } = {})
     if (rt.reason) L.push(`  ! ${rt.reason}`);
     for (const x of rt.cases.slice(0, lim(rt.cases))) {
       L.push(`  • ${d(x.date)} slot ${x.slot ?? "?"} ${short(x.signature)} ${x.kind}${x.side ? ` ${x.side}` : ""} — ${VERDICT[x.verdict]}`);
-      L.push(`      signataires ${x.signerCount}${x.signersComplete ? "" : " (incomplets)"} · payeur des frais ${x.feePayerIsWallet ? "= wallet" : "≠ wallet"} · SOL du wallet ${sol(x.walletLamports)} · trade ${x.tradingSol === null ? "n/a" : `${x.tradingSol.toFixed(6)} SOL`}${x.microTrade ? " (micro)" : ""} · loyers standard +${x.standardCreated}/−${x.standardClosed}`);
-      L.push(`      causes : ${x.causes.map((k) => CAUSE[k]).join(", ") || "—"} · comptes : ${x.accounts.slice(0, 4).map((a) => `${short(a.account)} ${a.lamports >= 0 ? "+" : ""}${a.lamports} [${a.role}${a.isTokenOwner ? ", propriétaire de tokens" : ""}]`).join(" ; ")}`);
+      L.push(`      signataires ${x.signerCount}${x.signersComplete ? "" : " (incomplets)"} · payeur des frais ${x.feePayerIsWallet ? "= wallet" : "≠ wallet"} · SOL du wallet ${sol(x.walletLamports)} · trade ${x.tradingSol === null ? "n/a" : `${x.tradingSol.toFixed(6)} SOL`}${x.microTrade ? " (micro)" : ""} · preuve de swap : ${x.swapProof === "counterparty_payment" ? "contrepartie payée" : x.swapProof === "wallet_side_only" ? "côté wallet seulement" : "n/a"} · financeur : ${x.funder ?? "n/a"}`);
+      L.push(`      tiers : ${x.thirdParties.map((t) => `${short(t.account)} ${t.role === "fee_payer" ? "payeur" : "co-signataire"} ${t.netLamports >= 0 ? "+" : ""}${t.netLamports}`).join(" ; ") || "aucun"} · pools : ${x.pools.map((p) => `${short(p.account)} ${p.lamports >= 0 ? "+" : ""}${p.lamports}`).join(" ; ") || "aucun"}`);
+      L.push(`      comptes : ${x.accounts.slice(0, 5).map((a2) => `${short(a2.account)} ${a2.lamports >= 0 ? "+" : ""}${a2.lamports} [${a2.role}]`).join(" ; ")}`);
       for (const t of x.notes) L.push(`      → ${t}`);
     }
     if (rt.cases.length > lim(rt.cases)) L.push(`  … ${rt.cases.length - lim(rt.cases)} autre(s) (--all ou --json)`);

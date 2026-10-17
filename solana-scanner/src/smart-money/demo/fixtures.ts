@@ -8,6 +8,7 @@ import { base58Encode } from "../../onchain/base58.ts";
 import { WSOL_MINT } from "../../wallets/trades.ts";
 import { USDC_MINT } from "../ledger/mints.ts";
 import { ATA_PROGRAM, TOKEN_ACCOUNT_RENT_LAMPORTS } from "../ledger/rent.ts";
+import { deriveAta, TOKEN_2022_PROGRAM_ID } from "../solana/pda.ts";
 
 export const addr = (n: number): string => base58Encode(new Uint8Array(32).fill(n));
 export const DEX_PROGRAM = addr(200);
@@ -66,13 +67,109 @@ export { ATA_PROGRAM, TOKEN_ACCOUNT_RENT_LAMPORTS, USDC_MINT, WSOL_MINT };
 
 const RENT_SOL = TOKEN_ACCOUNT_RENT_LAMPORTS / 1e9;
 
-/** Buy that also creates the wallet's token account: `sol` is the trading cost (fee included), the rent is on top. */
-export const buyCreatingAta = (sig: string, time: number, wallet: string, mint: string, ui: number, sol: number, ataAccount = addr(240)): HistoryTx =>
+/**
+ * Buy that also creates the wallet's token account: `sol` is the trading cost (fee included), the rent is on top.
+ * The created account is the wallet's REAL associated token account for `mint` (derived), unless `ataAccount` overrides it.
+ */
+export const buyCreatingAta = (sig: string, time: number, wallet: string, mint: string, ui: number, sol: number, ataAccount = deriveAta(wallet, mint)): HistoryTx =>
   tx({ sig, time, wallet, sol: -(sol + RENT_SOL), tokens: { [mint]: { ui } }, programs: [DEX_PROGRAM, ATA_PROGRAM], extraLamports: { [ataAccount]: TOKEN_ACCOUNT_RENT_LAMPORTS } });
 
 /** Sell that also closes the token account and gets its rent back. */
-export const sellClosingAta = (sig: string, time: number, wallet: string, mint: string, ui: number, sol: number, ataAccount = addr(240)): HistoryTx =>
+export const sellClosingAta = (sig: string, time: number, wallet: string, mint: string, ui: number, sol: number, ataAccount = deriveAta(wallet, mint)): HistoryTx =>
   tx({ sig, time, wallet, sol: sol + RENT_SOL, tokens: { [mint]: { ui: -ui } }, extraLamports: { [ataAccount]: -TOKEN_ACCOUNT_RENT_LAMPORTS } });
+
+export const POOL = addr(199);
+export const PROTOCOL_FEE_ACCOUNT = addr(198);
+export const TIP_ACCOUNT = addr(197);
+
+export interface SwapSpec {
+  sig: string;
+  time: number;
+  slot?: number;
+  wallet: string;
+  mint: string;
+  side: "buy" | "sell";
+  /** Tokens the wallet receives (buy) or gives (sell), UI units. */
+  ui: number;
+  /** SOL the POOL receives (buy) or pays out (sell). */
+  tradeSol: number;
+  /** Protocol fee paid on top of a buy / taken out of a sell, to a fee account (not the pool). */
+  protocolFeeSol?: number;
+  tipSol?: number;
+  /** Account creation / closure for the wallet's token account; `rentLamports` defaults to the standard rent. */
+  createAta?: boolean;
+  closeAta?: boolean;
+  rentLamports?: number;
+  /** Override the created / closed account (default: the wallet's REAL derived ATA). */
+  ataAccount?: string;
+  token2022?: boolean;
+  pool?: string;
+  /** Who signs / pays the network fee (default: the wallet alone). */
+  signers?: string[];
+  feePayer?: string;
+  /** Who funds the rent when it is not the fee payer path (extra lamports taken from this account). */
+  rentPayer?: string;
+  fee?: number;
+  programs?: string[];
+}
+
+/** A realistic swap: wallet ↔ pool (token owner), protocol fee account, optional tip, optional token-account rent. */
+export function swapTx(o: SwapSpec): HistoryTx {
+  const fee = o.fee ?? 5000;
+  const feePayer = o.feePayer ?? o.wallet;
+  const signers = o.signers ?? [o.wallet];
+  const pool = o.pool ?? POOL;
+  const dec = 6;
+  const raw = BigInt(Math.round(o.ui * 10 ** dec));
+  const lam = (sol: number) => Math.round(sol * 1e9);
+  const rent = o.rentLamports ?? TOKEN_ACCOUNT_RENT_LAMPORTS;
+  const ata = o.ataAccount ?? deriveAta(o.wallet, o.mint, o.token2022 ? TOKEN_2022_PROGRAM_ID : undefined);
+  const d: Record<string, number> = {};
+  const add = (a: string, n: number) => {
+    if (n !== 0) d[a] = (d[a] ?? 0) + n;
+  };
+  const trade = lam(o.tradeSol);
+  const pf = lam(o.protocolFeeSol ?? 0);
+  const tip = lam(o.tipSol ?? 0);
+  const rentPaidBy = o.rentPayer ?? o.wallet;
+  if (o.side === "buy") {
+    add(pool, trade);
+    add(o.wallet, -(trade + pf + tip));
+  } else {
+    add(pool, -trade);
+    add(o.wallet, trade - pf - tip);
+  }
+  add(PROTOCOL_FEE_ACCOUNT, pf);
+  if (tip) add(TIP_ACCOUNT, tip);
+  if (o.createAta) {
+    add(ata, rent);
+    add(rentPaidBy, -rent);
+  }
+  if (o.closeAta) {
+    add(ata, -rent);
+    add(o.wallet, rent);
+  }
+  add(feePayer, -fee);
+  const sign = o.side === "buy" ? 1n : -1n;
+  return {
+    signature: o.sig,
+    slot: o.slot ?? Math.floor(o.time / 400),
+    time: o.time,
+    failed: false,
+    feePayer,
+    signers,
+    signersComplete: true,
+    fee,
+    lamportDeltas: d,
+    tokenDeltas: {
+      [o.wallet]: { [o.mint]: { raw: (sign * raw).toString(), decimals: dec } },
+      [pool]: { [o.mint]: { raw: (-sign * raw).toString(), decimals: dec } },
+    },
+    programIds: o.programs ?? (o.createAta ? [DEX_PROGRAM, ATA_PROGRAM] : [DEX_PROGRAM]),
+    origin: "helius-gtfa",
+    providerHint: null,
+  };
+}
 
 /** Small deterministic PRNG so the demo is reproducible. */
 export function mulberry32(seed: number): () => number {

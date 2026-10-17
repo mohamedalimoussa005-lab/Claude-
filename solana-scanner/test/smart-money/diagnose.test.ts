@@ -5,10 +5,8 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import { join } from "node:path";
 import { main } from "../../src/smart-money/cli/main.ts";
 import { loadLocalData } from "../../src/smart-money/diagnose/load.ts";
-import { explainRent } from "../../src/smart-money/diagnose/rent.ts";
 import { assertNoSecrets, diagnoseWallet } from "../../src/smart-money/diagnose/run.ts";
-import { addr, TOKEN_ACCOUNT_RENT_LAMPORTS, ATA_PROGRAM, DEX_PROGRAM, tx } from "../../src/smart-money/demo/fixtures.ts";
-import { detectRent } from "../../src/smart-money/ledger/rent.ts";
+import { addr, tx } from "../../src/smart-money/demo/fixtures.ts";
 import { DEFAULT_THRESHOLDS } from "../../src/smart-money/config.ts";
 import { MINTS, T0, H, W, writeFixture } from "./diagnoseFixture.ts";
 import { tmpDir } from "./helpers.ts";
@@ -59,7 +57,7 @@ test("1-2 window: exact dates, and what is absent is said", async () => {
   const { report } = await run();
   const w = report.window;
   assert.equal(w.oldest?.date, new Date(T0 + 1 * H).toISOString());
-  assert.equal(w.newest?.date, new Date(T0 + 105 * H).toISOString());
+  assert.equal(w.newest?.date, new Date(T0 + 107 * H).toISOString());
   assert.equal(w.matchesReport, true);
   assert.ok(w.absent.some((a) => /AUCUNE donnée/.test(a) && a.includes(w.oldest!.date!)));
   assert.ok(w.absent.some((a) => /première transaction.*INCONNUE/.test(a)));
@@ -130,58 +128,37 @@ test("5 same token, same slot: the ordering ambiguity that fabricates an orphan 
   assert.ok(report.impossible.some((i) => i.section === "ordre dans un slot"));
 });
 
-test("6-7 rent: each uncertain transaction gets a cause, evidence and a verdict; micro-trade false positives are told apart", async () => {
+test("6-7 rent: only the cases engine v2 cannot prove remain; each gets a cause, the roles of the accounts and a verdict", async () => {
   const { report } = await run();
   const rent = report.rent;
-  assert.equal(rent.uncertainTxs, 4);
-  assert.equal(rent.identifiedTxs, 2); // the control create + close
+  assert.equal(rent.uncertainTxs, 3);
+  assert.equal(rent.identifiedTxs, 4); // Token-2022-sized creation, co-signed creation, control create + close
   const by = Object.fromEntries(rent.cases.map((c) => [c.signature, c]));
-
-  const micro = by["rent-micro"];
-  assert.equal(micro.verdict, "likely_false_positive_counterparty");
-  assert.equal(micro.microTrade, true);
-  assert.deepEqual(micro.causes, ["non_standard_rent_like_with_ata"]);
-  assert.ok(micro.accounts.some((a) => a.role === "rent_like_band" && a.isTokenOwner), "the pool is shown as a token owner");
-  assert.ok(micro.notes.some((n) => /micro-achat/.test(n)), "the micro buy that became a transfer is called out");
-
-  const t2022 = by["rent-2022"];
-  assert.equal(t2022.verdict, "likely_real_account_event");
-  assert.equal(t2022.microTrade, false);
-
-  const co = by["rent-cosigned"];
-  assert.deepEqual(co.causes, ["co_signer"]);
-  assert.equal(co.verdict, "funding_unattributed");
-  assert.equal(co.signerCount, 2);
-  assert.deepEqual(co.coSigners, [{ account: addr(250), netLamports: 0 }]);
-  assert.equal(co.standardCreated, 1);
-  assert.ok(co.notes.some((n) => /clé temporaire/.test(n)));
+  // The old false positives are gone: the micro buy and the co-signed / Token-2022 creations are no longer uncertain.
+  for (const sig of ["rent-micro", "rent-2022", "rent-cosigned", "rent-control", "rent-control-s"]) assert.equal(by[sig], undefined, sig);
 
   const sp = by["rent-sponsored"];
-  assert.ok(sp.causes.includes("sponsored_fee_payer") && sp.causes.includes("co_signer"));
-  assert.equal(sp.feePayerIsWallet, false);
-  assert.ok(sp.notes.some((n) => /frais payés par un autre compte/.test(n)));
+  assert.deepEqual(sp.causes, ["funder_ambiguous"]);
+  assert.equal(sp.verdict, "wallet_deposit_unproven");
+  assert.equal(sp.funder, "unknown");
+  assert.equal(sp.swapProof, "counterparty_payment");
+  assert.ok(sp.thirdParties.some((t) => t.account === addr(252) && t.role === "co_signer" && t.netLamports === -2_039_280));
+  assert.equal(sp.pools.length, 1, "the pool is a counterparty, never a rent");
+  assert.ok(sp.accounts.some((a) => a.role === "pool"));
+  assert.ok(sp.accounts.some((a) => a.role === "wallet_ata_created"));
 
-  assert.equal(by["rent-control"], undefined);
-  assert.deepEqual(rent.byVerdict, { likely_false_positive_counterparty: 1, likely_real_account_event: 1, funding_unattributed: 2 });
-  assert.equal(rent.microTradeCases, 1);
-});
+  const inc = by["rent-incomplete"];
+  assert.deepEqual(inc.causes, ["incomplete_signers"]);
+  assert.equal(inc.verdict, "signers_unavailable");
+  assert.equal(inc.signersComplete, false);
 
-test("explainRent names the branch but never disagrees with the accounting rule (detectRent)", () => {
-  const variants: ReturnType<typeof tx>[] = [];
-  for (const signers of [[W], [W, addr(250)], [addr(252), W]]) for (const feePayer of [W, addr(252)]) for (const complete of [true, false]) for (const created of [0, 1]) for (const closed of [0, 1]) for (const band of [0, 2_500_000, 2_157_600]) for (const ata of [true, false]) {
-    const extra: Record<string, number> = {};
-    if (created) extra[addr(210)] = TOKEN_ACCOUNT_RENT_LAMPORTS;
-    if (closed) extra[addr(211)] = -TOKEN_ACCOUNT_RENT_LAMPORTS;
-    if (band) extra[addr(212)] = band;
-    variants.push({ ...tx({ sig: "v", time: T0, wallet: W, sol: -1, tokens: { [MINTS.P]: { ui: 1 } }, programs: ata ? [DEX_PROGRAM, ATA_PROGRAM] : [DEX_PROGRAM], extraLamports: extra }), signers, feePayer, signersComplete: complete });
-  }
-  assert.equal(variants.length, 3 * 2 * 2 * 2 * 2 * 3 * 2);
-  for (const v of variants) {
-    const a = explainRent(v, W);
-    const b = detectRent(v, W);
-    assert.equal(a.status, b.status);
-    assert.equal(a.status === "uncertain", a.causes.length > 0, "an uncertain status always has a named cause");
-  }
+  const foreign = by["rent-foreign"];
+  assert.deepEqual(foreign.causes, ["standard_size_account_not_wallet_ata"]);
+  assert.equal(foreign.verdict, "unrecognised_standard_size_account");
+  assert.ok(foreign.accounts.some((a) => a.role === "standard_size_not_wallet_ata"));
+
+  assert.deepEqual(rent.byVerdict, { wallet_deposit_unproven: 1, signers_unavailable: 1, unrecognised_standard_size_account: 1 });
+  assert.deepEqual(rent.byCause, { funder_ambiguous: 1, incomplete_signers: 1, standard_size_account_not_wallet_ata: 1 });
 });
 
 test("8 depth: orphan tokens are ranked by how likely a modest extension reaches their purchase; the guess is labelled a heuristic", async () => {
@@ -237,7 +214,7 @@ test("9 terminal report and JSON export; no secret, whatever the environment hol
   const t = text.join("\n");
   for (const h of ["1. FENÊTRE", "2. RÉCONCILIATION", "3. VENTES SANS ACHAT", "4. MÊME TOKEN, MÊME SLOT", "5. RENT NON ATTRIBUABLE", "6. QUELLES POSITIONS", "DIAGNOSTICS IMPOSSIBLES", "lecture seule"]) assert.ok(t.includes(h), h);
   assert.match(t, /AMBIGUÏTÉ D'ORDRE/);
-  assert.match(t, /FAUX POSITIF probable/);
+  assert.match(t, /dépôt du wallet non prouvé/);
   assert.equal(t.includes(env.HELIUS_API_KEY), false);
 
   const json: string[] = [];

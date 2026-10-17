@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_THRESHOLDS } from "../../src/smart-money/config.ts";
-import { buildLedger } from "../../src/smart-money/ledger/build.ts";
-import { detectRent } from "../../src/smart-money/ledger/rent.ts";
-import { analyzeWallet } from "../../src/smart-money/pnl/profile.ts";
-import { ATA_PROGRAM, DEMO_START, DEX_PROGRAM, TOKEN_ACCOUNT_RENT_LAMPORTS, USDC_MINT, addr, buy, buyCreatingAta, mulberry32, sell, sellClosingAta, tx } from "../../src/smart-money/demo/fixtures.ts";
+import { ATA_PROGRAM, DEMO_START, DEX_PROGRAM, TOKEN_ACCOUNT_RENT_LAMPORTS, USDC_MINT, WSOL_MINT, addr, buy, buyCreatingAta, mulberry32, sell, sellClosingAta, swapTx, tx, POOL } from "../../src/smart-money/demo/fixtures.ts";
 import type { HistoryTx } from "../../src/history/types.ts";
+import { buildLedger } from "../../src/smart-money/ledger/build.ts";
+import { assessRent } from "../../src/smart-money/ledger/rent.ts";
 import type { TradeEntry, TransferEntry } from "../../src/smart-money/ledger/types.ts";
+import { analyzeWallet } from "../../src/smart-money/pnl/profile.ts";
+import { deriveAta, TOKEN_2022_PROGRAM_ID } from "../../src/smart-money/solana/pda.ts";
 import { closeTo } from "./helpers.ts";
 
 const W = addr(11);
@@ -17,13 +18,16 @@ const RENT = TOKEN_ACCOUNT_RENT_LAMPORTS / 1e9;
 const complete = { complete: true, oldestTime: null };
 const analyze = (txs: HistoryTx[], cov: { complete: boolean; oldestTime: number | null } = complete, tipAccounts: string[] = []) => analyzeWallet(W, txs, { coverage: cov, config: { thresholds: DEFAULT_THRESHOLDS, tipAccounts } });
 
-test("ATA creation on a buy: the deposit is rent, not trading cost", () => {
-  const e = buildLedger(W, [buyCreatingAta("b", T, W, M, 1000, 1)]).entries[0] as TradeEntry;
-  assert.equal(e.rentStatus, "identified");
-  assert.equal(e.rentDepositLamports, TOKEN_ACCOUNT_RENT_LAMPORTS);
-  assert.equal(e.rentRefundLamports, 0);
-  assert.ok(closeTo(e.quote.amount, 1 - 0.000005, 1e-9)); // 1 SOL of trading, fee out
-  assert.ok(closeTo(e.allInSol, 1 + RENT, 1e-9)); // what the balance really moved by
+test("ATA creation on a buy: the deposit is rent, not trading cost, and it is the wallet's own derived token account", () => {
+  const t = buyCreatingAta("b", T, W, M, 1000, 1);
+  const a = assessRent(t, W);
+  assert.equal(a.status, "identified");
+  assert.equal(a.funder, "wallet");
+  assert.equal(a.created[0].account, deriveAta(W, M));
+  assert.equal(a.depositLamports, TOKEN_ACCOUNT_RENT_LAMPORTS);
+  const e = buildLedger(W, [t]).entries[0] as TradeEntry;
+  assert.ok(closeTo(e.quote.amount, 1 - 0.000005, 1e-9)); // 1 SOL of trading, network fee out
+  assert.ok(closeTo(e.allInSol, 1 + RENT, 1e-9));
 });
 
 test("ATA closure on a sell: the refund is rent, not sale proceeds", () => {
@@ -33,125 +37,151 @@ test("ATA closure on a sell: the refund is rent, not sale proceeds", () => {
   assert.ok(closeTo(e.quote.amount, 2 + 0.000005, 1e-9));
 });
 
-test("create + close: PnL is the trading result; the rent comes back and nets to zero", () => {
+test("create + close: PnL is the trading result; the rent comes back and nets to zero; unrecovered rent is shown apart", () => {
   const { pnl, profile } = analyze([buyCreatingAta("b", T, W, M, 1000, 1), sellClosingAta("s", T + H, W, M, 1000, 3)]);
   const [r] = pnl.rounds;
   assert.equal(r.status, "KNOWN");
-  assert.ok(closeTo(r.pnl, 2)); // 3 − 1, not 3 − 1 − rent + rent drift
+  assert.ok(closeTo(r.pnl, 2));
   assert.ok(closeTo(r.rentDepositedSol, RENT) && closeTo(r.rentRecoveredSol, RENT));
   assert.ok(closeTo(profile.costs.rentNetLockedSol, 0, 1e-12));
-  assert.ok(closeTo(profile.costs.feesSol, 0.00001));
-});
-
-test("without separating rent the deposit would have looked like a loss: rent is excluded from the result", () => {
-  // Buy 1 → sell 1 (break-even trade). Rent is paid on the way in and only partly... fully refunded: net PnL must be ~0, not −rent.
-  const { profile } = analyze([buyCreatingAta("b", T, W, M, 1000, 1), sellClosingAta("s", T + H, W, M, 1000, 1)]);
-  assert.ok(closeTo(profile.totals.sol.realized, 0, 1e-9));
   const open = analyze([buyCreatingAta("b", T, W, M, 1000, 1)]);
-  assert.ok(closeTo(open.profile.costs.rentNetLockedSol, RENT, 1e-12)); // deposited, not yet recovered: shown apart
+  assert.ok(closeTo(open.profile.costs.rentNetLockedSol, RENT, 1e-12));
   assert.equal(open.profile.totals.sol.rounds, 0);
+  const flat = analyze([buyCreatingAta("b", T, W, M, 1000, 1), sellClosingAta("s", T + H, W, M, 1000, 1)]);
+  assert.ok(closeTo(flat.profile.totals.sol.realized, 0, 1e-9)); // break-even trade: no phantom rent loss
 });
 
-test("create-idempotent on an existing account (ATA program, no lamport change) is NOT a false alarm", () => {
-  const t = tx({ sig: "i", time: T, wallet: W, sol: -1, tokens: { [M]: { ui: 10 } }, programs: [DEX_PROGRAM, ATA_PROGRAM] });
-  const e = buildLedger(W, [t]).entries[0] as TradeEntry;
-  assert.equal(e.rentStatus, "none");
-  assert.deepEqual(e.flags, ["ata_program_present"]);
+test("a Token-2022 account of non-standard size is proven by its derived address, and its own delta is the rent", () => {
+  const t = swapTx({ sig: "t22", time: T, wallet: W, mint: M, side: "buy", ui: 10, tradeSol: 1, createAta: true, token2022: true, rentLamports: 2_157_600 });
+  const a = assessRent(t, W);
+  assert.equal(a.status, "identified");
+  assert.deepEqual([a.created[0].program, a.depositLamports], ["token2022", 2_157_600]);
+  assert.equal(a.created[0].account, deriveAta(W, M, TOKEN_2022_PROGRAM_ID));
 });
 
-test("a Token-2022-sized rent (not the standard amount) is UNCERTAIN: the round is PARTIAL, not a misleading PnL", () => {
-  const t2022 = buy("b", T, W, M, 1000, 1);
-  const odd = { ...t2022, programIds: [DEX_PROGRAM, ATA_PROGRAM], lamportDeltas: { ...t2022.lamportDeltas, [addr(242)]: 2_157_600 } };
-  assert.equal(detectRent(odd, W).status, "uncertain");
-  const { pnl, profile } = analyze([odd, sell("s", T + H, W, M, 1000, 2)]);
-  assert.equal(pnl.rounds[0].status, "PARTIAL");
-  assert.deepEqual(pnl.rounds[0].partialReasons, ["rent_unattributed"]);
-  assert.ok(pnl.rounds[0].pnl !== null); // approximate all-in value stays visible…
-  assert.equal(profile.counts.partial, 1);
-  assert.equal(profile.winRate.n, 0); // …but is kept out of the statistics
-  assert.equal(profile.totals.sol.rounds, 0);
-  assert.ok(profile.caveats.some((c) => /PARTIELLE/.test(c)));
+test("NO numeric range: a lamport delta that merely looks like a rent is never a rent", () => {
+  for (const delta of [890_880, 1_000_000, 2_039_279, 2_157_600, 2_500_000, 2_999_999, 3_000_000]) {
+    const t = tx({ sig: `r${delta}`, time: T, wallet: W, sol: -1, tokens: { [M]: { ui: 10 } }, programs: [DEX_PROGRAM, ATA_PROGRAM], extraLamports: { [addr(150)]: delta } });
+    assert.equal(assessRent(t, W).status, "none", String(delta));
+  }
+  // The exact standard amount on an account that is NOT the wallet's token account is a LEAD: uncertain, never identified.
+  const exact = tx({ sig: "exact", time: T, wallet: W, sol: -1, tokens: { [M]: { ui: 10 } }, programs: [DEX_PROGRAM, ATA_PROGRAM], extraLamports: { [addr(150)]: TOKEN_ACCOUNT_RENT_LAMPORTS } });
+  const a = assessRent(exact, W);
+  assert.equal(a.status, "uncertain");
+  assert.deepEqual(a.reasons, ["standard_size_account_not_wallet_ata"]);
+  assert.equal(a.depositLamports, 0);
+  // …unless the account is a pool (it owns tokens that moved), or no token / ATA program ran, or it signed.
+  const pool = { ...exact, tokenDeltas: { ...exact.tokenDeltas, [addr(150)]: { [M]: { raw: "-10000000", decimals: 6 } } } };
+  assert.equal(assessRent(pool, W).status, "none");
+  assert.equal(assessRent({ ...exact, programIds: [DEX_PROGRAM] }, W).status, "none");
 });
 
-test("rent in a transaction another party also signed cannot be attributed to the wallet: UNCERTAIN", () => {
-  const coSigned = { ...buyCreatingAta("b", T, W, M, 1000, 1), signers: [W, addr(251)] };
-  const r = detectRent(coSigned, W);
-  assert.deepEqual([r.status, r.depositLamports], ["uncertain", 0]);
-  const enhanced = { ...buyCreatingAta("b2", T, W, M, 1000, 1), signersComplete: false };
-  assert.equal(detectRent(enhanced, W).status, "uncertain");
-  const sponsored = { ...buyCreatingAta("b3", T, W, M, 1000, 1), feePayer: addr(252) };
-  assert.equal(detectRent(sponsored, W).status, "uncertain");
+test("the micro-trade false positive is gone: a pool's SOL is a counterparty, not a rent", () => {
+  const micro = swapTx({ sig: "m", time: T, wallet: W, mint: M, side: "buy", ui: 100, tradeSol: 0.0025, programs: [DEX_PROGRAM, ATA_PROGRAM] });
+  assert.equal(assessRent(micro, W).status, "none");
+  const e = buildLedger(W, [micro]).entries[0] as TradeEntry;
+  assert.equal(e.kind, "trade");
+  assert.equal(e.swapProof, "counterparty_payment");
+  assert.ok(e.reasons!.includes("micro_trade_kept"));
 });
 
-test("PARTIAL takes precedence over PROVISIONAL; UNKNOWN takes precedence over both", () => {
-  const odd = (() => { const t = buy("b", T, W, M, 1000, 1); return { ...t, programIds: [DEX_PROGRAM, ATA_PROGRAM], lamportDeltas: { ...t.lamportDeltas, [addr(242)]: 2_157_600 } }; })();
-  const incomplete = { complete: false, oldestTime: null };
-  assert.equal(analyze([odd, sell("s", T + H, W, M, 1000, 2)], incomplete).pnl.rounds[0].status, "PARTIAL");
-  assert.equal(analyze([odd, sell("s", T + H, W, M, 5000, 2)], incomplete).pnl.rounds[0].status, "UNKNOWN");
+test("who paid: another signer able to fund the deposit makes it unproven; a co-signer that nets nothing does not", () => {
+  const temp = swapTx({ sig: "temp", time: T, wallet: W, mint: M, side: "buy", ui: 10, tradeSol: 0.5, createAta: true, signers: [W, addr(250)] });
+  assert.equal(assessRent(temp, W).status, "identified");
+  assert.equal(assessRent(temp, W).funder, "wallet");
+
+  const sponsor = swapTx({ sig: "sp", time: T, wallet: W, mint: M, side: "buy", ui: 10, tradeSol: 0.5, createAta: true, signers: [W, addr(252)], rentPayer: addr(252) });
+  const a = assessRent(sponsor, W);
+  assert.deepEqual([a.status, a.funder, a.reasons], ["uncertain", "unknown", ["funder_ambiguous"]]);
+  assert.equal(a.depositLamports, 0);
+
+  const enhanced = { ...swapTx({ sig: "en", time: T, wallet: W, mint: M, side: "buy", ui: 10, tradeSol: 0.5, createAta: true }), signersComplete: false };
+  assert.deepEqual(assessRent(enhanced, W).reasons, ["incomplete_signers"]);
 });
 
-test("USDC swap with ATA creation: USD amounts untouched, SOL rent kept out of the USD price and the unconverted fee", () => {
-  const t = tx({ sig: "u", time: T, wallet: W, sol: -(RENT + 0.000005), tokens: { [M]: { ui: 10 }, [USDC_MINT]: { ui: -100 } }, programs: [DEX_PROGRAM, ATA_PROGRAM], extraLamports: { [addr(240)]: TOKEN_ACCOUNT_RENT_LAMPORTS } });
+test("a wallet that did not sign paid nothing: an ATA created for it by a sender is a third-party deposit, outside its cash flow", () => {
+  const sender = addr(77);
+  const airdrop: HistoryTx = {
+    signature: "air", slot: 1, time: T, failed: false, feePayer: sender, signers: [sender], signersComplete: true, fee: 5000,
+    lamportDeltas: { [sender]: -(TOKEN_ACCOUNT_RENT_LAMPORTS + 5000), [deriveAta(W, M)]: TOKEN_ACCOUNT_RENT_LAMPORTS },
+    tokenDeltas: { [W]: { [M]: { raw: "1000000", decimals: 6 } }, [sender]: { [M]: { raw: "-1000000", decimals: 6 } } },
+    programIds: [ATA_PROGRAM, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], origin: "helius-gtfa", providerHint: null,
+  };
+  const a = assessRent(airdrop, W);
+  assert.deepEqual([a.status, a.funder, a.depositLamports, a.thirdPartyDepositLamports], ["identified", "third_party", 0, TOKEN_ACCOUNT_RENT_LAMPORTS]);
+  const e = buildLedger(W, [airdrop]).entries[0] as TransferEntry;
+  assert.equal(e.kind, "transfer");
+  assert.equal(e.thirdPartyRentLamports, TOKEN_ACCOUNT_RENT_LAMPORTS);
+  assert.equal(e.rentDepositLamports, 0);
+});
+
+test("closing: the refund goes to the wallet unless another signer received an equivalent amount", () => {
+  const ok = swapTx({ sig: "c1", time: T, wallet: W, mint: M, side: "sell", ui: 10, tradeSol: 1, closeAta: true });
+  assert.equal(assessRent(ok, W).refundLamports, TOKEN_ACCOUNT_RENT_LAMPORTS);
+  const other = addr(251);
+  const diverted = swapTx({ sig: "c2", time: T, wallet: W, mint: M, side: "sell", ui: 10, tradeSol: 1, closeAta: true, signers: [W, other] });
+  diverted.lamportDeltas[other] = TOKEN_ACCOUNT_RENT_LAMPORTS; // the other signer got a rent-sized amount
+  const a = assessRent(diverted, W);
+  assert.deepEqual([a.status, a.reasons, a.refundLamports], ["uncertain", ["refund_destination_ambiguous"], 0]);
+});
+
+test("native SOL accounts: topping up the wrapped-SOL account is not a rent; creating it with a balance is, minus the balance", () => {
+  const wsolAta = deriveAta(W, WSOL_MINT);
+  const topUp = tx({ sig: "tu", time: T, wallet: W, sol: -1.000005, tokens: { [WSOL_MINT]: { ui: 1, decimals: 9 }, [M]: { ui: 5 } }, extraLamports: { [wsolAta]: 1_000_000_000 } });
+  assert.equal(assessRent(topUp, W).status, "none");
+  const create = tx({ sig: "cr", time: T, wallet: W, sol: -(1 + RENT + 0.000005), tokens: { [WSOL_MINT]: { ui: 1, decimals: 9 }, [M]: { ui: 5 } }, extraLamports: { [wsolAta]: 1_000_000_000 + TOKEN_ACCOUNT_RENT_LAMPORTS } });
+  const a = assessRent(create, W);
+  assert.equal(a.status, "identified");
+  assert.equal(a.depositLamports, TOKEN_ACCOUNT_RENT_LAMPORTS);
+});
+
+test("invariants over a grid: uncertain ⇔ a named reason; nothing is attributed without a proof", () => {
+  const ata = deriveAta(W, M);
+  let n = 0;
+  for (const signers of [[W], [W, addr(250)], [addr(252), W]]) for (const feePayer of [W, addr(252)]) for (const complete of [true, false]) for (const create of [false, true]) for (const close of [false, true]) for (const foreign of [false, true]) for (const prog of [true, false]) {
+    const extra: Record<string, number> = {};
+    if (create) extra[ata] = TOKEN_ACCOUNT_RENT_LAMPORTS;
+    if (close && !create) extra[ata] = -TOKEN_ACCOUNT_RENT_LAMPORTS;
+    if (foreign) extra[addr(213)] = TOKEN_ACCOUNT_RENT_LAMPORTS;
+    const t = { ...tx({ sig: "v", time: T, wallet: W, sol: -1, tokens: { [M]: { ui: 1 } }, programs: prog ? [DEX_PROGRAM, ATA_PROGRAM] : [DEX_PROGRAM], extraLamports: extra }), signers, feePayer, signersComplete: complete };
+    const a = assessRent(t, W);
+    n++;
+    assert.equal(a.status === "uncertain", a.reasons.length > 0);
+    if (a.status === "none") assert.ok(a.created.length === 0 && a.closed.length === 0 && a.unattributed.length === 0);
+    if (a.status === "identified") assert.ok(a.created.length > 0 || a.closed.length > 0);
+    assert.ok(a.depositLamports <= a.created.reduce((s, c) => s + c.rentLamports, 0));
+    if (a.depositLamports > 0) assert.ok(complete && signers.includes(W));
+    assert.ok(a.thirdPartyDepositLamports === 0 || !signers.includes(W));
+  }
+  assert.equal(n, 3 * 2 * 2 * 2 * 2 * 2 * 2);
+});
+
+test("USDC swap with ATA creation: USD amounts untouched, the rent kept out of the USD price and of the unconverted fee", () => {
+  const t = tx({ sig: "u", time: T, wallet: W, sol: -(RENT + 0.000005), tokens: { [M]: { ui: 10 }, [USDC_MINT]: { ui: -100 } }, programs: [DEX_PROGRAM, ATA_PROGRAM], extraLamports: { [deriveAta(W, M)]: TOKEN_ACCOUNT_RENT_LAMPORTS } });
   const e = buildLedger(W, [t]).entries[0] as TradeEntry;
   assert.deepEqual(e.quote, { asset: "USD", amount: 100 });
   assert.equal(e.rentDepositLamports, TOKEN_ACCOUNT_RENT_LAMPORTS);
-  assert.ok(closeTo(e.unconvertedFeeSol, 0.000005, 1e-12)); // fee only, no rent
-  const back = tx({ sig: "u2", time: T + H, wallet: W, sol: RENT - 0.000005, tokens: { [M]: { ui: -10 }, [USDC_MINT]: { ui: 140 } }, extraLamports: { [addr(240)]: -TOKEN_ACCOUNT_RENT_LAMPORTS } });
-  const { pnl, profile } = analyze([t, back]);
-  assert.equal(pnl.rounds[0].quote, "USD");
-  assert.ok(closeTo(pnl.rounds[0].pnl, 40));
-  assert.equal(profile.totals.sol.rounds, 0);
-});
-
-test("a SOL trade with identified rent is a trade even when small; the same size with unseparated rent stays a transfer", () => {
-  const small = buildLedger(W, [buyCreatingAta("b", T, W, M, 5, 0.0008)]).entries[0];
-  assert.equal(small.kind, "trade");
-  const unseparated = tx({ sig: "n", time: T, wallet: W, sol: -(RENT + 0.0008), tokens: { [M]: { ui: 5 } } }); // same SOL movement, no rent account visible
-  assert.equal(buildLedger(W, [unseparated]).entries[0].kind, "transfer");
-});
-
-test("transfers: a received token whose account the wallet had to create keeps the rent apart, price stays UNKNOWN", () => {
-  const t = tx({ sig: "t", time: T, wallet: W, sol: -(RENT + 0.000005), tokens: { [M]: { ui: 100 } }, programs: [ATA_PROGRAM, "11111111111111111111111111111111", "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"], extraLamports: { [addr(240)]: TOKEN_ACCOUNT_RENT_LAMPORTS } });
-  const e = buildLedger(W, [t]).entries[0] as TransferEntry;
-  assert.equal(e.kind, "transfer");
-  assert.equal(e.rentDepositLamports, TOKEN_ACCOUNT_RENT_LAMPORTS);
-  const { pnl } = analyze([t, sell("s", T + H, W, M, 100, 5)]);
-  assert.equal(pnl.rounds[0].status, "UNKNOWN");
-  assert.equal(pnl.rounds[0].pnl, null);
-});
-
-test("account cleanup with no token movement: the refund is counted at wallet level, tied to no position", () => {
-  const cleanup = tx({ sig: "c", time: T, wallet: W, sol: RENT * 3 - 0.000005, extraLamports: { [addr(240)]: -TOKEN_ACCOUNT_RENT_LAMPORTS, [addr(241)]: -TOKEN_ACCOUNT_RENT_LAMPORTS, [addr(242)]: -TOKEN_ACCOUNT_RENT_LAMPORTS } });
-  const l = buildLedger(W, [cleanup]);
-  assert.equal(l.entries.length, 0);
-  assert.equal(l.otherCosts.rentRefundLamports, 3 * TOKEN_ACCOUNT_RENT_LAMPORTS);
-  assert.equal(l.otherCosts.feeLamports, 5000);
-  const { profile } = analyze([cleanup]);
-  assert.ok(closeTo(profile.costs.rentRecoveredSol, 3 * RENT, 1e-12));
-});
-
-test("incomplete history with rent: still PROVISIONAL, rent accounting unaffected", () => {
-  const { pnl, profile } = analyze([buyCreatingAta("b", T, W, M, 1000, 1), sellClosingAta("s", T + H, W, M, 1000, 2)], { complete: false, oldestTime: T });
-  assert.equal(pnl.rounds[0].status, "PROVISIONAL");
-  assert.ok(closeTo(pnl.rounds[0].pnl, 1));
-  assert.equal(profile.winRate.n, 0);
-  assert.ok(closeTo(profile.costs.rentDepositedSol, RENT, 1e-12));
+  assert.ok(closeTo(e.unconvertedFeeSol, 0.000005, 1e-12));
 });
 
 test("tips configured: separated from the trading cost, deducted once in the net result", () => {
   const TIP = addr(77);
   const b = tx({ sig: "b", time: T, wallet: W, sol: -(1 + 0.001), tokens: { [M]: { ui: 10 } }, extraLamports: { [TIP]: 1_000_000 } });
-  const s = sell("s", T + H, W, M, 10, 2);
-  const withTip = analyze([b, s], complete, [TIP]).pnl.rounds[0];
+  const withTip = analyze([b, sell("s", T + H, W, M, 10, 2)], complete, [TIP]).pnl.rounds[0];
   assert.ok(closeTo(withTip.tipsSol, 0.001, 1e-12));
   assert.ok(closeTo(withTip.cost, 1 - 0.000005, 1e-9));
-  assert.ok(closeTo(withTip.pnl, 2 - 1.001, 1e-9)); // the tip really cost 0.001
-  const noTipConfig = analyze([b, s]).pnl.rounds[0];
-  assert.equal(noTipConfig.tipsSol, 0);
-  assert.ok(closeTo(noTipConfig.pnl, 2 - 1.001, 1e-9)); // same result: configuring tips changes the split, not the answer
+  assert.ok(closeTo(withTip.pnl, 2 - 1.001, 1e-9));
+  assert.ok(closeTo(analyze([b, sell("s", T + H, W, M, 10, 2)]).pnl.rounds[0].pnl, 2 - 1.001, 1e-9)); // same answer, different split
 });
 
-test("conservation with rent: net PnL = Σ all-in sells − Σ all-in buys + net identified rent, over random mixed trades", () => {
+test("incomplete history with proven rent: still PROVISIONAL, rent accounting unaffected", () => {
+  const { pnl, profile } = analyze([buyCreatingAta("b", T, W, M, 1000, 1), sellClosingAta("s", T + H, W, M, 1000, 2)], { complete: false, oldestTime: T });
+  assert.equal(pnl.rounds[0].status, "PROVISIONAL");
+  assert.ok(closeTo(pnl.rounds[0].pnl, 1));
+  assert.equal(profile.winRate.n, 0);
+});
+
+test("conservation with rent: net PnL = Σ all-in sells − Σ all-in buys + net proven rent, over random mixed trades", () => {
   const rnd = mulberry32(99);
   const txs: HistoryTx[] = [];
   for (let i = 0; i < 200; i++) {
@@ -161,8 +191,7 @@ test("conservation with rent: net PnL = Σ all-in sells − Σ all-in buys + net
     const t0 = T + i * 3 * H;
     const create = rnd() < 0.5;
     const close = rnd() < 0.5;
-    const acct = addr(130 + (i % 100));
-    txs.push((create ? buyCreatingAta : buy)(`b${i}`, t0, W, mint, 1000, c, acct), (close ? sellClosingAta : sell)(`s${i}`, t0 + H, W, mint, 1000, p, acct));
+    txs.push((create ? buyCreatingAta : buy)(`b${i}`, t0, W, mint, 1000, c), (close ? sellClosingAta : sell)(`s${i}`, t0 + H, W, mint, 1000, p));
   }
   const ledger = buildLedger(W, txs);
   const { profile } = analyze(txs);
@@ -174,4 +203,10 @@ test("conservation with rent: net PnL = Σ all-in sells − Σ all-in buys + net
   }
   assert.equal(profile.counts.known, 200);
   assert.ok(closeTo(profile.totals.sol.realized, allIn + rentNet, 1e-6));
+});
+
+test("a pool is always apart from the rent: the helper's counterparty is the token owner that moved the other way", () => {
+  const t = swapTx({ sig: "p", time: T, wallet: W, mint: M, side: "buy", ui: 10, tradeSol: 0.3, createAta: true });
+  assert.ok(POOL in t.tokenDeltas && t.tokenDeltas[POOL][M].raw.startsWith("-"));
+  assert.ok(closeTo(t.lamportDeltas[POOL] / 1e9, 0.3));
 });

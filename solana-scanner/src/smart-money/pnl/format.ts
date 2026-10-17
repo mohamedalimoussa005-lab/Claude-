@@ -10,6 +10,7 @@ export function formatProfile(p: WalletPnlProfile): string {
   const c = p.consistency;
   const L: string[] = [];
   L.push(`Wallet ${short(p.wallet)} · historique ${p.coverage.complete ? "COMPLET" : "INCOMPLET"}`);
+  if (!p.coverage.complete) L.push("⚠ PnL NON FIABLE : l'historique est tronqué ou de complétude inconnue — aucun profit n'est affirmé, seules des positions provisoires existent.");
   L.push(`Positions fermées : ${p.counts.known} connues · ${p.counts.partial} PARTIELLES · ${p.counts.provisional} provisoires · ${p.counts.unknown} INCONNUES · ${p.counts.open} ouvertes`);
   L.push(`Part du résultat connu : ${pct(p.knownShare)}`);
   L.push(`PnL réalisé (connu, frais inclus) : ${sol(p.totals.sol.realized)} sur ${p.totals.sol.rounds} position(s) SOL` + (p.totals.usd.rounds ? ` · ${p.totals.usd.realized.toFixed(2)} USD sur ${p.totals.usd.rounds} position(s) USD (non additionnés)` : ""));

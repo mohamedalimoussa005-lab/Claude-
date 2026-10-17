@@ -25,7 +25,7 @@ function history(n: number, o: { ata?: boolean } = {}): HistoryTx[] {
   for (let i = 0; i < Math.floor(n / 2); i++) {
     const mint = addr(30 + (i % 150));
     const t = DEMO_START + i * 2 * H;
-    out.push((o.ata ? buyCreatingAta : buy)(`b${String(i).padStart(4, "0")}`, t, W, mint, 1000, 1, addr(160 + (i % 60))), (o.ata ? sellClosingAta : sell)(`s${String(i).padStart(4, "0")}`, t + H, W, mint, 1000, 2, addr(160 + (i % 60))));
+    out.push((o.ata ? buyCreatingAta : buy)(`b${String(i).padStart(4, "0")}`, t, W, mint, 1000, 1), (o.ata ? sellClosingAta : sell)(`s${String(i).padStart(4, "0")}`, t + H, W, mint, 1000, 2));
   }
   return out;
 }
