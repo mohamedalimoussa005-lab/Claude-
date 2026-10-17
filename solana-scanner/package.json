@@ -43,7 +43,8 @@
     "test:smart-money": "node --experimental-strip-types --no-warnings --test test/smart-money/*.test.ts",
     "smartmoney:wallet": "node --experimental-strip-types --no-warnings scripts/smart-money.ts wallet",
     "smartmoney:estimate": "node --experimental-strip-types --no-warnings scripts/smart-money.ts estimate",
-    "smartmoney:preflight": "node --experimental-strip-types --no-warnings scripts/smart-money.ts preflight"
+    "smartmoney:preflight": "node --experimental-strip-types --no-warnings scripts/smart-money.ts preflight",
+    "smartmoney:diagnose": "node --experimental-strip-types --no-warnings scripts/smart-money.ts diagnose"
   },
   "dependencies": {
     "react": "^18.3.1",
